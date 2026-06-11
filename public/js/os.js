@@ -303,11 +303,13 @@ const MENUS = {
     ["—"],
     ["System Settings…", () => OS.launch("settings")],
     ["Bloomberg Portal", () => OS.launch("terminal")],
+    ["IBKR Desktop", () => OS.launch("ibkr")],
     ["—"],
     ["Restart…", () => location.reload()],
   ],
   file: [
     ["New Terminal Window", () => OS.launch("terminal")],
+    ["Open IBKR Desktop", () => OS.launch("ibkr")],
     ["New Note", () => OS.launch("notes")],
     ["—"],
     ["Close Window", () => OS.focusedApp()?.close()],

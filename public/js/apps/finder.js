@@ -8,7 +8,7 @@ export function createFinder() {
     Documents: [
       {
         name: "README.md", icon: GLYPHS.doc,
-        text: "# sewing.top\n\nSewingOS — macOS-style web desktop on Cloudflare Workers.\n\n- Bloomberg Portal: live quotes via Yahoo Finance + Binance\n- Weather: Open-Meteo\n- Everything else: vanilla JS",
+        text: "# sewing.top\n\nSewingOS — macOS-style web desktop on Cloudflare Workers.\n\n- Bloomberg Portal: live quotes via Yahoo Finance + Binance\n- IBKR Desktop: interactive portfolio and local order workflow\n- Weather: Open-Meteo\n- Everything else: vanilla JS",
       },
       {
         name: "deploy-notes.txt", icon: GLYPHS.doc,

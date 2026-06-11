@@ -10,6 +10,7 @@ import { createCalendar } from "/js/apps/calendar.js";
 import { createWeather } from "/js/apps/weather.js";
 import { createCLI } from "/js/apps/cli.js";
 import { createFinder } from "/js/apps/finder.js";
+import { createIBKRDesktop } from "/js/apps/ibkr.js";
 import { registerAdditionalApps } from "/js/apps/additional-apps.js";
 import { ICONS } from "/js/icons.js";
 
@@ -46,6 +47,30 @@ OS.registerApp({
   },
   onResize() { term?.redraw(); },
   onClose() { term?.destroy(); term = null; },
+});
+
+/* ---------- IBKR Desktop ---------- */
+
+let ibkr = null;
+
+OS.registerApp({
+  id: "ibkr",
+  name: "IBKR Desktop",
+  icon: ICONS.ibkr,
+  open() {
+    ibkr = createIBKRDesktop();
+    const w = Math.min(1882, window.innerWidth - 32);
+    const h = Math.min(1230, window.innerHeight - 92);
+    return { title: "IBKR Desktop", width: w, height: h, x: 16, y: 12 };
+  },
+  onOpen(win) {
+    win.el.style.minWidth = "720px";
+    win.el.style.minHeight = "540px";
+    win.body.appendChild(ibkr.root);
+    ibkr.start();
+  },
+  onResize() { ibkr?.redraw(); },
+  onClose() { ibkr?.destroy(); ibkr = null; },
 });
 
 /* ---------- Notes ---------- */

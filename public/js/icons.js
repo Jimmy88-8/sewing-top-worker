@@ -13,6 +13,8 @@ export const ICONS = {
 
   market: image("bloomberg-portal"),
 
+  ibkr: image("ibkr"),
+
   notes: image("notes"),
 
   calculator: image("calculator"),
