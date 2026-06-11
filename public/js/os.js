@@ -138,11 +138,12 @@ class SewWindow {
 export const OS = {
   registerApp(spec) {
     apps.set(spec.id, spec);
+    if (spec.dock === false) return;
     const btn = document.createElement("button");
     btn.className = "dock-item";
     btn.dataset.app = spec.id;
     btn.innerHTML = `${spec.icon}<span class="tip">${spec.name}</span>`;
-    btn.addEventListener("click", () => OS.launch(spec.id));
+    btn.addEventListener("click", () => OS.launch(spec.id, btn));
     dockEl.appendChild(btn);
   },
 
@@ -152,9 +153,20 @@ export const OS = {
     dockEl.appendChild(sep);
   },
 
-  launch(id) {
+  bounceIcon(source) {
+    const target = source?.querySelector?.(".app-ic") ?? source;
+    if (!target) return;
+    target.classList.remove("icon-bounce");
+    void target.offsetWidth;
+    target.classList.add("icon-bounce");
+    target.addEventListener("animationend", () => target.classList.remove("icon-bounce"), { once: true });
+    setTimeout(() => target.classList.remove("icon-bounce"), 700);
+  },
+
+  launch(id, source) {
     const app = apps.get(id);
     if (!app) return;
+    OS.bounceIcon(source ?? dockEl.querySelector(`[data-app="${id}"]`));
     const existing = openWindows.get(id);
     if (existing) { existing.focus(); return existing; }
     const opts = app.open();
@@ -223,7 +235,7 @@ function spotRender() {
         <span>${a.icon}</span>${a.name}<kbd>${i === spotSel ? "↩" : ""}</kbd></button>`)
     .join("");
   spotResults.querySelectorAll(".spot-hit").forEach((b) =>
-    b.addEventListener("click", () => { hideSpotlight(); OS.launch(b.dataset.app); }),
+    b.addEventListener("click", () => { OS.launch(b.dataset.app, b); setTimeout(hideSpotlight, 220); }),
   );
 }
 
@@ -242,7 +254,10 @@ spotInput.addEventListener("keydown", (e) => {
   if (e.key === "Escape") hideSpotlight();
   else if (e.key === "ArrowDown") { spotSel = Math.min(spotSel + 1, hits.length - 1); spotRender(); e.preventDefault(); }
   else if (e.key === "ArrowUp") { spotSel = Math.max(spotSel - 1, 0); spotRender(); e.preventDefault(); }
-  else if (e.key === "Enter" && hits[spotSel]) { hideSpotlight(); OS.launch(hits[spotSel].dataset.app); }
+  else if (e.key === "Enter" && hits[spotSel]) {
+    OS.launch(hits[spotSel].dataset.app, hits[spotSel]);
+    setTimeout(hideSpotlight, 220);
+  }
 });
 spot.addEventListener("click", (e) => { if (e.target === spot) hideSpotlight(); });
 
@@ -287,7 +302,7 @@ const MENUS = {
     ["About SewingOS", () => OS.launch("about")],
     ["—"],
     ["System Settings…", () => OS.launch("settings")],
-    ["Market Terminal", () => OS.launch("terminal")],
+    ["Bloomberg Portal", () => OS.launch("terminal")],
     ["—"],
     ["Restart…", () => location.reload()],
   ],

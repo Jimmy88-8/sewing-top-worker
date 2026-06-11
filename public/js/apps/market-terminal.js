@@ -1,5 +1,5 @@
 /**
- * Market Terminal — Bloomberg-style market monitor.
+ * Bloomberg Portal — Bloomberg-style market monitor.
  * Live data from /api/quotes, /api/history, /api/news (Yahoo Finance,
  * Binance, RSS). Falls back to tagged simulation when feeds are down.
  *

@@ -10,6 +10,7 @@ import { createCalendar } from "/js/apps/calendar.js";
 import { createWeather } from "/js/apps/weather.js";
 import { createCLI } from "/js/apps/cli.js";
 import { createFinder } from "/js/apps/finder.js";
+import { registerAdditionalApps } from "/js/apps/additional-apps.js";
 import { ICONS } from "/js/icons.js";
 
 initWallpaper();
@@ -20,23 +21,24 @@ OS.registerApp({
   id: "finder",
   name: "Finder",
   icon: ICONS.finder,
+  finder: false,
   open() { return { title: "Finder", width: 640, height: 400, x: 90, y: 70 }; },
   onOpen(win) { win.body.appendChild(createFinder(OS)); },
 });
 
-/* ---------- Market Terminal ---------- */
+/* ---------- Bloomberg Portal ---------- */
 
 let term = null;
 
 OS.registerApp({
   id: "terminal",
-  name: "Market Terminal",
+  name: "Bloomberg Portal",
   icon: ICONS.market,
   open() {
     term = createMarketTerminal();
     const w = Math.min(1240, window.innerWidth - 60);
     const h = Math.min(760, window.innerHeight - 140);
-    return { title: "MARKET TERMINAL — SEWING<GO>", width: w, height: h, x: 30, y: 24 };
+    return { title: "BLOOMBERG PORTAL — SEWING<GO>", width: w, height: h, x: 30, y: 24 };
   },
   onOpen(win) {
     win.body.appendChild(term.root);
@@ -82,7 +84,7 @@ OS.registerApp({
 OS.registerApp({
   id: "calendar",
   name: "Calendar",
-  icon: ICONS.calendar(new Date().getDate()),
+  icon: ICONS.calendar,
   open() { return { title: "Calendar", width: 380, height: 400, x: 480, y: 110 }; },
   onOpen(win) { win.body.appendChild(createCalendar()); },
 });
@@ -123,6 +125,7 @@ OS.registerApp({
   id: "about",
   name: "About SewingOS",
   icon: ICONS.about,
+  finder: false,
   open() { return { title: "About SewingOS", width: 460, height: 440 }; },
   onOpen(win) {
     const div = document.createElement("div");
@@ -131,7 +134,7 @@ OS.registerApp({
       <h1>✦ SewingOS</h1>
       <p>A macOS-style web desktop running in your browser, served from the
          Cloudflare edge at <code>sewing.top</code>.</p>
-      <h2>Market Terminal</h2>
+      <h2>Bloomberg Portal</h2>
       <p>A Bloomberg-style market monitor with <em>live data</em>: equities,
          indices, FX and futures from Yahoo Finance (delayed), crypto from
          Binance, headlines from CNBC / Yahoo RSS. When a feed is unreachable
@@ -147,17 +150,27 @@ OS.registerApp({
   },
 });
 
+registerAdditionalApps(OS);
+
 OS.addDockSeparator();
 
 OS.registerApp({
   id: "trash",
-  name: "Trash (empty)",
+  name: "Trash",
   icon: ICONS.trash,
+  finder: false,
   open() { return { title: "Trash", width: 360, height: 240 }; },
   onOpen(win) {
     const div = document.createElement("div");
     div.className = "app-pad";
-    div.innerHTML = "<p style='margin-top:40px;text-align:center;color:#888'>Trash is empty. Impressively tidy.</p>";
+    div.innerHTML = `
+      <h1>Trash</h1>
+      <p>3 items are waiting to be permanently deleted.</p>
+      <div class="trash-items">
+        <span>old-icon-export.png</span>
+        <span>draft-notes.txt</span>
+        <span>unused-assets</span>
+      </div>`;
     win.body.appendChild(div);
   },
 });

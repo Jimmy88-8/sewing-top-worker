@@ -1,36 +1,35 @@
 /**
- * Finder — virtual file browser. Apps launch on double-click;
- * text files open inline with a back button.
+ * Finder — virtual file browser for local SewingOS files.
  */
-import { ICONS, GLYPHS } from "/js/icons.js";
+import { GLYPHS } from "/js/icons.js";
 
-export function createFinder(OS) {
+export function createFinder() {
   const FS = {
-    Applications: [
-      { name: "Market Terminal", icon: ICONS.market, app: "terminal" },
-      { name: "Notes", icon: ICONS.notes, app: "notes" },
-      { name: "Calculator", icon: ICONS.calculator, app: "calculator" },
-      { name: "Calendar", icon: ICONS.calendar(new Date().getDate()), app: "calendar" },
-      { name: "Weather", icon: ICONS.weather, app: "weather" },
-      { name: "Terminal", icon: ICONS.cli, app: "cli" },
-      { name: "Settings", icon: ICONS.settings, app: "settings" },
-    ],
     Documents: [
       {
         name: "README.md", icon: GLYPHS.doc,
-        text: "# sewing.top\n\nSewingOS — macOS-style web desktop on Cloudflare Workers.\n\n- Market Terminal: live quotes via Yahoo Finance + Binance\n- Weather: Open-Meteo\n- Everything else: vanilla JS",
+        text: "# sewing.top\n\nSewingOS — macOS-style web desktop on Cloudflare Workers.\n\n- Bloomberg Portal: live quotes via Yahoo Finance + Binance\n- Weather: Open-Meteo\n- Everything else: vanilla JS",
       },
       {
         name: "deploy-notes.txt", icon: GLYPHS.doc,
         text: "Deploy: push to GitHub -> Cloudflare Workers Builds auto-deploys.\nDomain: sewing.top bound as Worker custom domain.\nLocal dev: npm run dev (zero-dependency Node server).",
       },
+      { name: "Projects", icon: GLYPHS.folder, folder: "Projects" },
     ],
-    Desktop: [],
+    Downloads: [
+      { name: "new icon", icon: GLYPHS.folder, folder: "New icon assets" },
+    ],
+    Desktop: [
+      { name: "Screenshots", icon: GLYPHS.folder, folder: "Screenshots" },
+    ],
+    Pictures: [
+      { name: "Game Covers", icon: GLYPHS.folder, folder: "Generated game covers" },
+    ],
   };
 
   const root = document.createElement("div");
   root.className = "finder";
-  let current = "Applications";
+  let current = "Documents";
 
   function render() {
     const sidebar = Object.keys(FS)
@@ -58,7 +57,16 @@ export function createFinder(OS) {
   }
 
   function openItem(it) {
-    if (it.app) { OS.launch(it.app); return; }
+    if (it.folder) {
+      root.innerHTML = `
+        <div class="fnd-view">
+          <div class="fnd-view-bar"><button class="fnd-back">&#8249; Back</button><b></b></div>
+          <div class="fnd-empty">Folder is empty</div>
+        </div>`;
+      root.querySelector(".fnd-view-bar b").textContent = it.folder;
+      root.querySelector(".fnd-back").addEventListener("click", render);
+      return;
+    }
     if (it.text != null) {
       root.innerHTML = `
         <div class="fnd-view">
