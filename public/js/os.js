@@ -12,21 +12,27 @@ let zCounter = 10;
 const apps = new Map();      // id -> app spec
 const openWindows = new Map(); // id -> SewWindow
 
+const RESIZE_EDGES = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
+
 class SewWindow {
   constructor(os, app, opts) {
     this.os = os;
     this.app = app;
     this.maximized = false;
     this.prevRect = null;
+    this.minW = Math.max(200, opts.minWidth ?? 320);
+    this.minH = Math.max(140, opts.minHeight ?? 200);
 
     const el = document.createElement("section");
     el.className = "window opening";
-    el.style.width = (opts.width ?? 640) + "px";
-    el.style.height = (opts.height ?? 420) + "px";
-    const x = opts.x ?? Math.max(8, (desktop.clientWidth - (opts.width ?? 640)) / 2);
-    const y = opts.y ?? Math.max(8, (desktop.clientHeight - (opts.height ?? 420)) / 2.4);
-    el.style.left = x + "px";
-    el.style.top = y + "px";
+    const w = Math.min(opts.width ?? 640, desktop.clientWidth - 16);
+    const h = Math.min(opts.height ?? 420, desktop.clientHeight - 16);
+    el.style.width = w + "px";
+    el.style.height = h + "px";
+    const x = opts.x ?? Math.max(8, (desktop.clientWidth - w) / 2);
+    const y = opts.y ?? Math.max(8, (desktop.clientHeight - h) / 2.4);
+    el.style.left = Math.max(0, Math.min(x, desktop.clientWidth - 120)) + "px";
+    el.style.top = Math.max(0, Math.min(y, desktop.clientHeight - 60)) + "px";
 
     el.innerHTML = `
       <div class="titlebar">
@@ -38,7 +44,7 @@ class SewWindow {
         <div class="win-title"></div>
       </div>
       <div class="win-body"></div>
-      <div class="win-resize"></div>`;
+      ${RESIZE_EDGES.map((e) => `<div class="rz rz-${e}" data-edge="${e}"></div>`).join("")}`;
 
     el.querySelector(".win-title").textContent = opts.title ?? app.name;
     this.el = el;
@@ -50,7 +56,7 @@ class SewWindow {
     el.addEventListener("pointerdown", () => this.focus());
 
     this.#drag(el.querySelector(".titlebar"));
-    this.#resize(el.querySelector(".win-resize"));
+    for (const h of el.querySelectorAll(".rz")) this.#resize(h);
 
     windowsEl.appendChild(el);
     requestAnimationFrame(() => requestAnimationFrame(() => el.classList.remove("opening")));
@@ -65,8 +71,10 @@ class SewWindow {
       const startX = e.clientX, startY = e.clientY;
       const ox = this.el.offsetLeft, oy = this.el.offsetTop;
       const move = (ev) => {
-        this.el.style.left = Math.round(ox + ev.clientX - startX) + "px";
-        this.el.style.top = Math.max(0, Math.round(oy + ev.clientY - startY)) + "px";
+        const minX = -(this.el.offsetWidth - 90);
+        const maxX = desktop.clientWidth - 90;
+        this.el.style.left = Math.round(Math.min(maxX, Math.max(minX, ox + ev.clientX - startX))) + "px";
+        this.el.style.top = Math.min(desktop.clientHeight - 40, Math.max(0, Math.round(oy + ev.clientY - startY))) + "px";
       };
       const up = () => {
         window.removeEventListener("pointermove", move);
@@ -81,14 +89,29 @@ class SewWindow {
   }
 
   #resize(handle) {
+    const edge = handle.dataset.edge;
     handle.addEventListener("pointerdown", (e) => {
+      if (this.maximized) return;
       e.preventDefault();
+      e.stopPropagation();
       this.focus();
       const startX = e.clientX, startY = e.clientY;
       const ow = this.el.offsetWidth, oh = this.el.offsetHeight;
+      const ox = this.el.offsetLeft, oy = this.el.offsetTop;
       const move = (ev) => {
-        this.el.style.width = Math.max(320, ow + ev.clientX - startX) + "px";
-        this.el.style.height = Math.max(200, oh + ev.clientY - startY) + "px";
+        const dx = ev.clientX - startX, dy = ev.clientY - startY;
+        let w = ow, h = oh, x = ox, y = oy;
+        if (edge.includes("e")) w = ow + dx;
+        if (edge.includes("s")) h = oh + dy;
+        if (edge.includes("w")) { w = ow - dx; x = ox + dx; }
+        if (edge.includes("n")) { h = oh - dy; y = oy + dy; }
+        if (w < this.minW) { if (edge.includes("w")) x -= this.minW - w; w = this.minW; }
+        if (h < this.minH) { if (edge.includes("n")) y -= this.minH - h; h = this.minH; }
+        if (y < 0) { h += y; y = 0; }
+        this.el.style.width = Math.round(w) + "px";
+        this.el.style.height = Math.round(h) + "px";
+        this.el.style.left = Math.round(x) + "px";
+        this.el.style.top = Math.round(y) + "px";
         this.app.onResize?.(this);
       };
       const up = () => {
@@ -302,7 +325,7 @@ const MENUS = {
     ["About SewingOS", () => OS.launch("about")],
     ["—"],
     ["System Settings…", () => OS.launch("settings")],
-    ["Bloomberg Portal", () => OS.launch("terminal")],
+    ["Bloomberg Professional", () => OS.launch("terminal")],
     ["IBKR Desktop", () => OS.launch("ibkr")],
     ["—"],
     ["Restart…", () => location.reload()],

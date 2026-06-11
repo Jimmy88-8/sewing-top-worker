@@ -100,6 +100,8 @@ export function registerAdditionalApps(OS) {
           height,
           x: 80 + (id.length * 17) % 260,
           y: 48 + (id.length * 11) % 120,
+          minWidth: Math.min(width, 440),
+          minHeight: Math.min(height, 320),
         };
       },
       onOpen(win) {
@@ -119,32 +121,80 @@ function createToolbar(title, subtitle) {
 
 function createActivity() {
   const root = rootFor("activity");
-  const toolbar = createToolbar("Processes", "Local SewingOS activity");
-  const refresh = node("button", "util-button", "Refresh");
-  toolbar.appendChild(refresh);
+  root.appendChild(createToolbar("Activity Monitor", "Live SewingOS activity"));
   const table = node("div", "process-table");
+  const footer = node("div", "activity-footer");
+  const canvas = node("canvas", "activity-graph");
+  const legend = node("div", "activity-legend");
+  footer.append(legend, canvas);
   const processes = [
-    ["SewingOS", 4.8, 184],
-    ["Bloomberg Portal", 2.6, 126],
-    ["WindowServer", 1.7, 92],
-    ["Weather", 0.4, 38],
-    ["Finder", 0.2, 34],
+    ["Bloomberg Professional", 6.2, 188],
+    ["SewingOS WindowServer", 3.1, 142],
+    ["IBKR Desktop", 2.2, 117],
+    ["cloudflared-edge", 1.4, 64],
+    ["Weather", 0.6, 38],
+    ["Finder", 0.3, 34],
     ["Spotlight", 0.1, 21],
+    ["notesd", 0.1, 18],
   ];
+  const history = Array(80).fill(8);
 
   const render = () => {
+    const total = processes.reduce((s, p) => s + p[1], 0);
     table.innerHTML = `
       <div class="process-row process-head"><span>Process Name</span><span>% CPU</span><span>Memory</span></div>
-      ${processes.map(([name, cpu, memory]) => `
-        <div class="process-row"><span>${name}</span><span>${cpu.toFixed(1)}</span><span>${memory} MB</span></div>
+      ${processes
+        .slice()
+        .sort((a, b) => b[1] - a[1])
+        .map(([name, cpu, memory]) => `
+        <div class="process-row"><span>${name}</span><span>${cpu.toFixed(1)}</span><span>${memory.toFixed(0)} MB</span></div>
       `).join("")}`;
+    legend.innerHTML = `<b>CPU Load</b><span>${total.toFixed(1)}% user · ${(total * 0.4).toFixed(1)}% system</span>`;
   };
-  refresh.addEventListener("click", () => {
-    for (const row of processes) row[1] = Math.max(0.1, row[1] + Math.random() * 2 - 1);
+
+  const drawGraph = () => {
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    const ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+    const W = rect.width, H = rect.height;
+    ctx.clearRect(0, 0, W, H);
+    ctx.beginPath();
+    history.forEach((v, i) => {
+      const x = (i / (history.length - 1)) * W;
+      const y = H - 2 - (v / 40) * (H - 6);
+      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    });
+    ctx.strokeStyle = "#30d158";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath();
+    ctx.fillStyle = "rgba(48, 209, 88, 0.15)";
+    ctx.fill();
+  };
+
+  const tick = () => {
+    for (const row of processes) {
+      row[1] = Math.max(0.1, Math.min(28, row[1] + (Math.random() - 0.5) * row[1] * 0.6));
+      row[2] = Math.max(12, row[2] + (Math.random() - 0.5) * 4);
+    }
+    history.push(processes.reduce((s, p) => s + p[1], 0));
+    history.shift();
     render();
-  });
+    drawGraph();
+  };
+
+  const timer = setInterval(tick, 1500);
+  new MutationObserver((_, obs) => {
+    if (!root.isConnected) { clearInterval(timer); obs.disconnect(); }
+  }).observe(document.body, { childList: true, subtree: true });
+  new ResizeObserver(drawGraph).observe(canvas);
+
   render();
-  root.append(toolbar, table);
+  root.append(table, footer);
   return root;
 }
 
@@ -215,9 +265,13 @@ function createBooks() {
     ["The Psychology of Money", "Morgan Housel", "Short stories about wealth and behavior."],
     ["Thinking in Systems", "Donella Meadows", "A primer for seeing systems clearly."],
   ];
-  const show = ([title, author, summary]) => {
+  const hues = [28, 210, 150, 282];
+  const show = ([title, author, summary], index) => {
     detail.innerHTML = "";
-    detail.append(node("div", "book-cover", title.slice(0, 1)), node("h2", "", title), node("p", "", author), node("p", "util-muted", summary));
+    const cover = node("div", "book-cover", title.slice(0, 1));
+    const h = hues[index % hues.length];
+    cover.style.background = `linear-gradient(145deg, hsl(${h} 75% 58%), hsl(${h + 28} 65% 30%))`;
+    detail.append(cover, node("h2", "", title), node("p", "", author), node("p", "util-muted", summary));
   };
   books.forEach((book, index) => {
     const button = node("button", `split-row ${index === 0 ? "active" : ""}`);
@@ -225,11 +279,11 @@ function createBooks() {
     button.addEventListener("click", () => {
       list.querySelectorAll(".split-row").forEach((row) => row.classList.remove("active"));
       button.classList.add("active");
-      show(book);
+      show(book, index);
     });
     list.appendChild(button);
   });
-  show(books[0]);
+  show(books[0], 0);
   layout.append(list, detail);
   root.appendChild(layout);
   return root;
@@ -277,6 +331,11 @@ function createDictionary() {
     terminal: ["noun", "A text-based interface used to communicate with a computer."],
     system: ["noun", "A set of connected things forming a complex whole."],
     design: ["noun", "A plan or specification made before something is created."],
+    glass: ["noun", "A hard, transparent material; in UI design, a translucent layered surface."],
+    market: ["noun", "A place or mechanism where buyers and sellers exchange assets."],
+    edge: ["noun", "In computing, infrastructure located close to end users."],
+    liquid: ["adjective", "Flowing freely; in finance, easily converted to cash."],
+    worker: ["noun", "A lightweight serverless process that handles requests at the edge."],
   };
   const render = () => {
     const word = search.value.trim().toLowerCase() || "sewing";
@@ -301,28 +360,48 @@ function createChat(spec) {
   addExternalButton(toolbar, spec, "Open Discord");
   const layout = node("div", "chat-layout");
   const channels = node("div", "chat-channels");
-  ["general", "design", "markets", "music"].forEach((name) => channels.appendChild(node("button", "chat-channel", `# ${name}`)));
   const main = node("div", "chat-main");
   const messages = node("div", "chat-messages");
-  [["Jeremy", "The new icon set is looking sharp."], ["SewingBot", "All local services are online."]].forEach(([name, text]) => {
-    const row = node("div", "chat-message");
-    row.append(node("b", "", name), node("span", "", text));
-    messages.appendChild(row);
+  const history = {
+    general: [["Jeremy", "The new icon set is looking sharp."], ["SewingBot", "All local services are online."]],
+    design: [["Jeremy", "Bloomberg login screen now matches the real one."], ["SewingBot", "Design QA pass scheduled."]],
+    markets: [["SewingBot", "NVDA GP <GO> — chart is live."], ["Jeremy", "Watching the 1Y trend today."]],
+    music: [["SewingBot", "Now playing: Golden Gate Drive."]],
+  };
+  let channel = "general";
+
+  const renderMessages = () => {
+    messages.innerHTML = "";
+    for (const [name, text] of history[channel]) {
+      const row = node("div", "chat-message");
+      row.append(node("b", "", name), node("span", "", text));
+      messages.appendChild(row);
+    }
+    messages.scrollTop = messages.scrollHeight;
+    input.placeholder = `Message #${channel}`;
+    for (const c of channels.children) c.classList.toggle("on", c.dataset.ch === channel);
+  };
+
+  Object.keys(history).forEach((name) => {
+    const b = node("button", "chat-channel", `# ${name}`);
+    b.dataset.ch = name;
+    b.addEventListener("click", () => { channel = name; renderMessages(); });
+    channels.appendChild(b);
   });
+
   const form = node("form", "assistant-compose");
   const input = node("input");
-  input.placeholder = "Message #general";
   form.append(input, node("button", "util-button", "Send"));
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     if (!input.value.trim()) return;
-    const row = node("div", "chat-message");
-    row.append(node("b", "", "You"), node("span", "", input.value.trim()));
-    messages.appendChild(row);
+    history[channel].push(["You", input.value.trim()]);
     input.value = "";
+    renderMessages();
   });
   main.append(messages, form);
   layout.append(channels, main);
+  renderMessages();
   root.append(toolbar, layout);
   return root;
 }
@@ -360,22 +439,34 @@ function createFreeform() {
   const add = node("button", "util-button", "Add note");
   toolbar.appendChild(add);
   const board = node("div", "freeform-board");
+  const COLORS = ["#f4d86f", "#ffb38a", "#a8e6a1", "#9fd0ff", "#e3b8ff"];
   let notes = readJSON("sewingos.freeform", ["Ideas", "Launch checklist", "Icon review"]);
+  const save = () => localStorage.setItem("sewingos.freeform", JSON.stringify(notes));
   const render = () => {
     board.innerHTML = "";
     notes.forEach((text, index) => {
+      const wrap = node("div", "freeform-wrap");
       const area = node("textarea", "freeform-note");
       area.value = text;
+      area.style.background = COLORS[index % COLORS.length];
       area.addEventListener("input", () => {
         notes[index] = area.value;
-        localStorage.setItem("sewingos.freeform", JSON.stringify(notes));
+        save();
       });
-      board.appendChild(area);
+      const remove = node("button", "freeform-x", "×");
+      remove.title = "Delete note";
+      remove.addEventListener("click", () => {
+        notes.splice(index, 1);
+        save();
+        render();
+      });
+      wrap.append(area, remove);
+      board.appendChild(wrap);
     });
   };
   add.addEventListener("click", () => {
     notes.push("New note");
-    localStorage.setItem("sewingos.freeform", JSON.stringify(notes));
+    save();
     render();
   });
   render();
@@ -402,12 +493,25 @@ function createBrowser(spec) {
   const start = node("div", "browser-start");
   start.innerHTML = `<span>${spec.icon}</span>`;
   start.append(node("h1", "", spec.name), node("p", "util-muted", "Enter an address or search term. Pages open in a new browser tab for security."));
-  const quick = node("div", "browser-quick");
-  [["Google", "https://google.com"], ["SewingOS", location.origin], ["OpenAI", "https://openai.com"]].forEach(([label, url]) => {
-    const button = node("button", "util-button util-secondary", label);
-    button.addEventListener("click", () => openExternal(url));
-    quick.appendChild(button);
-  });
+  const quick = node("div", "browser-favs");
+  const favs = [
+    ["G", "Google", "https://google.com", "#4285f4"],
+    ["S", "sewing.top", location.origin, "#ff9f0a"],
+    ["B", "Bloomberg", "https://www.bloomberg.com", "#111111"],
+    ["C", "Claude", "https://claude.ai", "#d97757"],
+    ["Y", "YouTube", "https://youtube.com", "#ff0000"],
+    ["W", "Wikipedia", "https://wikipedia.org", "#5b5b5b"],
+    ["X", "X", "https://x.com", "#1d1d1f"],
+    ["N", "Notion", "https://notion.so", "#3a3a3a"],
+  ];
+  for (const [letter, label, url, color] of favs) {
+    const tile = node("button", "browser-fav");
+    const badge = node("span", "browser-fav-badge", letter);
+    badge.style.background = color;
+    tile.append(badge, node("small", "", label));
+    tile.addEventListener("click", () => openExternal(url));
+    quick.appendChild(tile);
+  }
   start.appendChild(quick);
   toolbar.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -468,13 +572,22 @@ function createTranslate() {
     hello: "你好",
     "thank you": "谢谢",
     "good morning": "早上好",
+    "good night": "晚安",
     weather: "天气",
     computer: "电脑",
     design: "设计",
+    market: "市场",
+    terminal: "终端",
+    "stock market": "股市",
+    news: "新闻",
+    settings: "设置",
+    music: "音乐",
+    "see you tomorrow": "明天见",
   };
+  const reverse = Object.fromEntries(Object.entries(phrases).map(([k, v]) => [v, k]));
   source.addEventListener("input", () => {
     const key = source.value.trim().toLowerCase();
-    target.value = phrases[key] ?? (key ? "Offline dictionary has no match." : "");
+    target.value = phrases[key] ?? reverse[source.value.trim()] ?? (key ? "Offline dictionary has no match." : "");
   });
   panels.append(source, target);
   root.appendChild(panels);
@@ -510,30 +623,51 @@ function createMail() {
 
 function createMaps() {
   const root = rootFor("maps");
-  const toolbar = createToolbar("Maps", "Saved places");
+  const toolbar = createToolbar("Maps", "OpenStreetMap");
   const search = node("input", "util-search");
-  search.placeholder = "Search saved places";
+  search.placeholder = "Search a place… (Enter)";
   toolbar.appendChild(search);
-  const list = node("div", "place-grid");
   const places = [
-    ["Kuala Lumpur", "Malaysia", "3.1390,101.6869"],
-    ["George Town", "Penang", "5.4141,100.3288"],
-    ["Singapore", "Singapore", "1.3521,103.8198"],
-    ["Tokyo", "Japan", "35.6762,139.6503"],
+    ["Kuala Lumpur", 3.139, 101.6869],
+    ["Singapore", 1.3521, 103.8198],
+    ["Tokyo", 35.6762, 139.6503],
+    ["San Francisco", 37.7749, -122.4194],
   ];
-  const render = () => {
-    const query = search.value.toLowerCase();
-    list.innerHTML = "";
-    for (const [name, region, coords] of places.filter((place) => place.join(" ").toLowerCase().includes(query))) {
-      const card = node("button", "place-card");
-      card.append(node("b", "", name), node("span", "", region), node("small", "", coords));
-      card.addEventListener("click", () => openExternal(`https://www.openstreetmap.org/search?query=${encodeURIComponent(name)}`));
-      list.appendChild(card);
-    }
+  const chips = node("div", "maps-chips");
+  const frame = node("iframe", "maps-frame");
+  frame.title = "Map";
+  frame.referrerPolicy = "no-referrer";
+  const status = node("div", "maps-status");
+
+  const show = (label, lat, lon) => {
+    const d = 0.04;
+    frame.src = `https://www.openstreetmap.org/export/embed.html?bbox=${lon - d}%2C${lat - d}%2C${lon + d}%2C${lat + d}&layer=mapnik&marker=${lat}%2C${lon}`;
+    status.textContent = `${label} · ${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+    for (const c of chips.children) c.classList.toggle("on", c.textContent === label);
   };
-  search.addEventListener("input", render);
-  render();
-  root.append(toolbar, list);
+
+  for (const [name, lat, lon] of places) {
+    const chip = node("button", "maps-chip", name);
+    chip.addEventListener("click", () => show(name, lat, lon));
+    chips.appendChild(chip);
+  }
+
+  search.addEventListener("keydown", async (event) => {
+    if (event.key !== "Enter" || !search.value.trim()) return;
+    status.textContent = `Searching “${search.value.trim()}”…`;
+    try {
+      const res = await fetch(`/api/geocode?q=${encodeURIComponent(search.value.trim())}`);
+      const d = await res.json();
+      const hit = d.results?.[0];
+      if (hit) show(hit.name, hit.latitude, hit.longitude);
+      else status.textContent = "No place found.";
+    } catch {
+      status.textContent = "Search unavailable offline.";
+    }
+  });
+
+  show(...places[0]);
+  root.append(toolbar, chips, frame, status);
   return root;
 }
 
@@ -541,23 +675,64 @@ function createMusic(spec) {
   const root = rootFor("music");
   const toolbar = createToolbar(spec.name, "Local player demo");
   addExternalButton(toolbar, spec);
+  const tracks = spec.id === "spotify"
+    ? [["Discover Weekly", "Made for you", 214], ["Daily Mix 1", "Indie · Dream pop", 187], ["Release Radar", "New this week", 243], ["Focus Flow", "Instrumental beats", 198]]
+    : [["SewingOS Mix", "Various Artists", 226], ["Golden Gate Drive", "Midnight Runners", 204], ["Liquid Glass", "Translucent", 191], ["Edge Computing Blues", "The Isolates", 233]];
+  let idx = 0, playing = false, pos = 28;
+
   const player = node("div", "music-player");
   player.innerHTML = `<span class="music-art">${spec.icon}</span>`;
-  const title = node("h2", "", spec.id === "spotify" ? "Discover Weekly" : "SewingOS Mix");
-  const artist = node("p", "util-muted", "Various Artists");
-  const control = node("button", "music-play", "Play");
+  const title = node("h2");
+  const artist = node("p", "util-muted");
   const range = node("input", "music-range");
-  range.type = "range";
-  range.min = "0";
-  range.max = "100";
-  range.value = "28";
-  let playing = false;
+  range.type = "range"; range.min = "0"; range.max = "100"; range.value = String(pos);
+  const time = node("div", "music-time");
+  const controls = node("div", "music-controls");
+  const prev = node("button", "music-skip", "⏮");
+  const control = node("button", "music-play", "▶");
+  const next = node("button", "music-skip", "⏭");
+  controls.append(prev, control, next);
+  const list = node("div", "music-list");
+
+  const fmtT = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  const renderTrack = () => {
+    const [t, a, dur] = tracks[idx];
+    title.textContent = t;
+    artist.textContent = a;
+    time.textContent = `${fmtT(dur * pos / 100)} / ${fmtT(dur)}`;
+    for (const [i, row] of [...list.children].entries()) row.classList.toggle("on", i === idx);
+  };
+  const select = (i) => { idx = i; pos = 0; range.value = "0"; renderTrack(); };
+
+  tracks.forEach(([t, a], i) => {
+    const row = node("button", "music-row");
+    row.append(node("b", "", t), node("span", "", a));
+    row.addEventListener("click", () => { select(i); });
+    list.appendChild(row);
+  });
+
   control.addEventListener("click", () => {
     playing = !playing;
-    control.textContent = playing ? "Pause" : "Play";
+    control.textContent = playing ? "⏸" : "▶";
   });
-  player.append(title, artist, range, control);
-  root.append(toolbar, player);
+  prev.addEventListener("click", () => select((idx + tracks.length - 1) % tracks.length));
+  next.addEventListener("click", () => select((idx + 1) % tracks.length));
+  range.addEventListener("input", () => { pos = Number(range.value); renderTrack(); });
+
+  const timer = setInterval(() => {
+    if (!playing) return;
+    pos += 100 / tracks[idx][2];
+    if (pos >= 100) { select((idx + 1) % tracks.length); return; }
+    range.value = String(pos);
+    renderTrack();
+  }, 1000);
+  new MutationObserver((_, obs) => {
+    if (!root.isConnected) { clearInterval(timer); obs.disconnect(); }
+  }).observe(document.body, { childList: true, subtree: true });
+
+  player.append(title, artist, range, time, controls);
+  renderTrack();
+  root.append(toolbar, player, list);
   return root;
 }
 
@@ -612,19 +787,27 @@ function createPhotos() {
   ];
   const preview = node("div", "photo-preview");
   const large = node("img");
+  let current = 0;
+  const showAt = (i) => {
+    current = (i + sources.length) % sources.length;
+    large.src = sources[current];
+    preview.classList.add("open");
+  };
+  const navPrev = node("button", "photo-nav", "‹");
+  const navNext = node("button", "photo-nav", "›");
   const close = node("button", "util-button", "Close");
+  navPrev.addEventListener("click", () => showAt(current - 1));
+  navNext.addEventListener("click", () => showAt(current + 1));
   close.addEventListener("click", () => preview.classList.remove("open"));
-  preview.append(large, close);
-  sources.forEach((src) => {
+  preview.append(navPrev, large, navNext, close);
+  sources.forEach((src, i) => {
     const button = node("button", "photo-cell");
     const img = node("img");
     img.src = src;
     img.alt = "";
+    img.loading = "lazy";
     button.appendChild(img);
-    button.addEventListener("click", () => {
-      large.src = src;
-      preview.classList.add("open");
-    });
+    button.addEventListener("click", () => showAt(i));
     grid.appendChild(button);
   });
   root.append(grid, preview);
@@ -743,7 +926,7 @@ function createShortcuts(spec, OS) {
   const grid = node("div", "shortcut-grid");
   const shortcuts = [
     ["Open Weather", () => OS.launch("weather")],
-    ["Open Bloomberg Portal", () => OS.launch("terminal")],
+    ["Open Bloomberg", () => OS.launch("terminal")],
     ["New Note", () => OS.launch("notes")],
     ["Show Reminders", () => OS.launch("reminders")],
     ["Open Finder", () => OS.launch("finder")],
@@ -812,13 +995,17 @@ function createWidgetsmith() {
     preview.innerHTML = "";
     preview.append(node("small", "", title.value || "Widget"));
     const content = style.value === "clock"
-      ? new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      ? new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
       : style.value === "weather" ? "29 C  Clear" : "Make it useful.";
     preview.appendChild(node("b", "", content));
   };
   title.addEventListener("input", render);
   color.addEventListener("input", render);
   style.addEventListener("change", render);
+  const timer = setInterval(() => { if (style.value === "clock") render(); }, 1000);
+  new MutationObserver((_, obs) => {
+    if (!root.isConnected) { clearInterval(timer); obs.disconnect(); }
+  }).observe(document.body, { childList: true, subtree: true });
   render();
   layout.append(controls, preview);
   root.appendChild(layout);

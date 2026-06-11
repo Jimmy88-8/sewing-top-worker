@@ -8,6 +8,7 @@
 :root {
   /* layout */
   --menubar-h: 28px;
+  --titlebar-h: 38px;
 
   /* type scale */
   --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue",
@@ -24,16 +25,21 @@
   --text-2: rgba(255, 255, 255, 0.60);
   --text-3: rgba(255, 255, 255, 0.36);
   --sep: rgba(255, 255, 255, 0.08);
+  --sep-strong: rgba(255, 255, 255, 0.14);
 
   /* color: semantic */
   --accent: #ff9f0a;
+  --accent-contrast: #1a1208;
+  --link: #6ab7ff;
   --ok: #30d158;
   --bad: #ff453a;
 
-  /* interaction fills */
+  /* interaction fills — one ladder for every control */
+  --fill-1: rgba(255, 255, 255, 0.055);  /* resting card */
   --fill-hover: rgba(255, 255, 255, 0.08);
   --fill-active: rgba(255, 255, 255, 0.14);
   --fill-selected: rgba(255, 159, 10, 0.22);
+  --disabled-opacity: 0.4;
 
   /* Liquid Glass: 0 = ultra-clear … 1 = fully tinted */
   --glass: 0.55;
@@ -72,6 +78,7 @@ html, body {
 }
 
 button { font-family: inherit; }
+button:disabled { opacity: var(--disabled-opacity); pointer-events: none; }
 
 /* one focus language everywhere */
 :focus { outline: none; }
@@ -80,6 +87,18 @@ button { font-family: inherit; }
   outline-offset: 1px;
   border-radius: var(--r-xs);
 }
+
+/* one scrollbar language on glass surfaces */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: rgba(255, 255, 255, 0.3); }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-corner { background: transparent; }
 
 body {
   background:
@@ -151,7 +170,7 @@ body {
   background: none; border: 0; color: var(--text-1); font: inherit; font-size: var(--fs-md);
   padding: 5px 12px; border-radius: var(--r-xs); cursor: default;
 }
-.mb-dropdown button:hover { background: var(--accent); color: #1a1208; }
+.mb-dropdown button:hover { background: var(--accent); color: var(--accent-contrast); }
 .mb-dropdown hr { border: 0; border-top: 1px solid var(--sep); margin: 5px 10px; }
 
 /* ---------- desktop ---------- */
@@ -166,7 +185,7 @@ body {
 
 .window {
   position: absolute;
-  min-width: 320px; min-height: 200px;
+  min-width: 200px; min-height: 140px;
   display: flex; flex-direction: column;
   border-radius: var(--r-md);
   background: rgba(26, 26, 32, var(--glass-a));
@@ -184,7 +203,7 @@ body {
 .window:not(.focused) .titlebar { color: var(--text-3); }
 
 .titlebar {
-  height: 36px; flex: 0 0 auto;
+  height: var(--titlebar-h); flex: 0 0 auto;
   display: flex; align-items: center;
   padding: 0 12px;
   background: linear-gradient(rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.02));
@@ -223,7 +242,16 @@ body {
   color: var(--text-1);
 }
 
-.win-resize { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; }
+/* eight invisible resize hit areas, one per edge/corner */
+.rz { position: absolute; z-index: 4; }
+.rz-n  { top: -4px; left: 10px; right: 10px; height: 8px; cursor: ns-resize; }
+.rz-s  { bottom: -4px; left: 10px; right: 10px; height: 8px; cursor: ns-resize; }
+.rz-e  { right: -4px; top: 10px; bottom: 10px; width: 8px; cursor: ew-resize; }
+.rz-w  { left: -4px; top: 10px; bottom: 10px; width: 8px; cursor: ew-resize; }
+.rz-ne { top: -4px; right: -4px; width: 14px; height: 14px; cursor: nesw-resize; }
+.rz-nw { top: -4px; left: -4px; width: 14px; height: 14px; cursor: nwse-resize; }
+.rz-se { bottom: -4px; right: -4px; width: 14px; height: 14px; cursor: nwse-resize; }
+.rz-sw { bottom: -4px; left: -4px; width: 14px; height: 14px; cursor: nesw-resize; }
 
 /* ---------- dock ---------- */
 
@@ -289,7 +317,7 @@ body {
 .app-pad h2 { font-size: var(--fs-xs); font-weight: 600; letter-spacing: 0.6px; text-transform: uppercase; margin: 16px 0 6px; color: var(--text-2); }
 .app-pad p { color: var(--text-2); }
 .app-pad b, .app-pad code { color: var(--text-1); }
-.app-pad a { color: #6ab7ff; }
+.app-pad a { color: var(--link); }
 .app-pad code {
   font-family: var(--font-mono); font-size: var(--fs-sm);
   background: var(--fill-hover); padding: 1px 5px; border-radius: 4px;
@@ -308,3 +336,41 @@ body {
   font-family: var(--font-ui); font-size: 14px; line-height: 1.6;
   padding: 16px; user-select: text;
 }
+
+/* ---------- About (Apple-style vertical card) ---------- */
+
+.about {
+  flex: 1; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; align-items: center;
+  text-align: center;
+  padding: 30px 30px 24px;
+}
+.about-icon {
+  width: 116px; height: 116px;
+  filter: drop-shadow(0 14px 28px rgba(0, 0, 0, 0.45));
+  margin-bottom: 14px;
+}
+.about-icon img { width: 100%; height: 100%; }
+.about h1 { font-size: 26px; font-weight: 700; letter-spacing: 0.2px; }
+.about .about-version { color: var(--text-2); font-size: var(--fs-md); margin-top: 3px; }
+.about-rows {
+  width: 100%; max-width: 320px;
+  margin: 22px 0 18px;
+  font-size: var(--fs-md);
+}
+.about-rows div {
+  display: flex; justify-content: space-between; gap: 18px;
+  padding: 6px 2px;
+}
+.about-rows span { color: var(--text-2); }
+.about-rows b { font-weight: 500; color: var(--text-1); text-align: right; }
+.about-actions { display: flex; gap: 10px; }
+.about-btn {
+  border: 0.5px solid var(--sep-strong); border-radius: var(--r-xs);
+  background: var(--fill-hover); color: var(--text-1);
+  font: inherit; font-size: var(--fs-sm); padding: 5px 14px; cursor: default;
+  transition: background var(--t-fast) var(--ease);
+}
+.about-btn:hover { background: var(--fill-active); }
+.about-btn:active { background: rgba(255, 255, 255, 0.2); }
+.about-legal { margin-top: 18px; color: var(--text-3); font-size: var(--fs-xs); line-height: 1.5; }

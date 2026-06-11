@@ -46,7 +46,7 @@ export function createIBKRDesktop() {
     mode: "paper",
     screen: "login",
     options: false,
-    user: "kinglimmy",
+    user: "",
     page: "portfolio",
     selected: "SPY",
     quotes: new Map(QUOTES.map((quote) => [quote.symbol, { ...quote }])),
@@ -71,8 +71,8 @@ export function createIBKRDesktop() {
               <button data-mode="paper" class="${state.mode === "paper" ? "active" : ""}">Paper Trading</button>
             </div>
             <form class="ib-login-form">
-              <label>${icon("user-circle")}<input name="username" value="${state.user}" autocomplete="username" aria-label="Username"></label>
-              <label>${icon("rectangle-stack")}<input name="password" type="password" placeholder="Password" value="papertrade" autocomplete="current-password" aria-label="Password"></label>
+              <label>${icon("user-circle")}<input name="username" placeholder="Username" autocomplete="off" aria-label="Username"></label>
+              <label>${icon("rectangle-stack")}<input name="password" type="password" placeholder="Password" autocomplete="off" aria-label="Password"></label>
               <button class="ib-help-link" type="button">Get Help</button>
               <button class="ib-login-button" type="submit">${buttonLabel}</button>
             </form>
@@ -127,7 +127,7 @@ export function createIBKRDesktop() {
     });
     root.querySelector(".ib-login-form").addEventListener("submit", (event) => {
       event.preventDefault();
-      state.user = event.currentTarget.elements.username.value.trim() || "kinglimmy";
+      state.user = event.currentTarget.elements.username.value.trim() || "Paper Trader";
       renderConnecting();
       state.timers.push(setTimeout(renderWorkspace, 1100));
     });
@@ -327,7 +327,7 @@ export function createIBKRDesktop() {
   }
 
   function accountMetrics() {
-    const metrics = [["Account","DU9559074"],["Daily P&L","--"],["Daily P&L %","--"],["Unrealized P&L","--"],["Realized P&L","--"],["Net Liquidity","1.1M"],["Excess Liq","1.1M"],["Maintenance","0"],["Initial Margin","0"],["Available Funds","1.1M"],["Buying Power","4.3M"]];
+    const metrics = [["Account","DU•••••74"],["Daily P&L","--"],["Daily P&L %","--"],["Unrealized P&L","--"],["Realized P&L","--"],["Net Liquidity","1.1M"],["Excess Liq","1.1M"],["Maintenance","0"],["Initial Margin","0"],["Available Funds","1.1M"],["Buying Power","4.3M"]];
     return `<div class="ib-metrics">${metrics.map(([label, value]) => `<span><small>${label}</small><b>${value}</b></span>`).join("")}</div>`;
   }
 
@@ -372,7 +372,7 @@ export function createIBKRDesktop() {
   }
 
   function orderEntry() {
-    return `<div class="ib-order-entry"><input placeholder="⌕ Search"><h3>SPY <small>SS SPDR S&amp;P 500 ETF TRUST-US</small></h3><div class="ib-bidask">Last <b>730.90</b><br>Change <b class="up">5.47 +0.75%</b><br>Ask <b class="down">650 × 730.99</b><br>Bid <b class="blue">455 × 730.89</b></div><div class="ib-order-tabs"><button>Buy Order</button><button>Sell Order</button></div><p>Account <b>DU9559074</b> &nbsp; Position -</p><p>Available Funds <b>1.08M</b></p><label>Quantity <input value="100"> Shares</label><div class="ib-order-types">Limit &nbsp;&nbsp;&nbsp; Market &nbsp;&nbsp;&nbsp; Stop</div><label>Limit Price <input placeholder="--"></label><button class="ib-submit-order" data-order="BUY">Submit Order</button></div>`;
+    return `<div class="ib-order-entry"><input placeholder="⌕ Search"><h3>SPY <small>SS SPDR S&amp;P 500 ETF TRUST-US</small></h3><div class="ib-bidask">Last <b>730.90</b><br>Change <b class="up">5.47 +0.75%</b><br>Ask <b class="down">650 × 730.99</b><br>Bid <b class="blue">455 × 730.89</b></div><div class="ib-order-tabs"><button>Buy Order</button><button>Sell Order</button></div><p>Account <b>DU•••••74</b> &nbsp; Position -</p><p>Available Funds <b>1.08M</b></p><label>Quantity <input value="100"> Shares</label><div class="ib-order-types">Limit &nbsp;&nbsp;&nbsp; Market &nbsp;&nbsp;&nbsp; Stop</div><label>Limit Price <input placeholder="--"></label><button class="ib-submit-order" data-order="BUY">Submit Order</button></div>`;
   }
 
   function newsList() {
