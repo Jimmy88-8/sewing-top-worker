@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SewingOS</title>
+  <meta name="description" content="SewingOS — a macOS-style web desktop featuring a Bloomberg-style Market Terminal. Running on Cloudflare Workers." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23111827'/%3E%3Ctext x='32' y='43' font-size='32' text-anchor='middle' fill='%23ff9f0a' font-family='Menlo,monospace'%3ES%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/css/system.css" />
+  <link rel="stylesheet" href="/css/apps.css" />
+  <link rel="stylesheet" href="/css/terminal.css" />
+</head>
+<body>
+  <!-- Boot screen -->
+  <div id="boot">
+    <div class="boot-logo">SewingOS</div>
+    <div class="boot-bar"><div class="boot-bar-fill"></div></div>
+  </div>
+
+  <!-- Menu bar -->
+  <header id="menubar">
+    <div class="mb-left">
+      <button class="mb-item mb-logo" data-menu="system">&#10022;</button>
+      <button class="mb-item mb-appname" id="mb-appname">Finder</button>
+      <button class="mb-item" data-menu="file">File</button>
+      <button class="mb-item" data-menu="view">View</button>
+      <button class="mb-item" data-menu="window">Window</button>
+      <button class="mb-item" data-menu="help">Help</button>
+    </div>
+    <div class="mb-right">
+      <button class="mb-item mb-icon" id="mb-spot" title="Spotlight (⌘Space)">
+        <svg viewBox="0 0 16 16" width="14" height="14"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><line x1="10" y1="10" x2="14" y2="14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      </button>
+      <span class="mb-item mb-icon" title="Wi-Fi">
+        <svg viewBox="0 0 16 12" width="15" height="12"><path d="M8 10.6 L9.6 8.8 A2.6 2.6 0 0 0 6.4 8.8 Z" fill="currentColor"/><path d="M3.8 6.2 a6 6 0 0 1 8.4 0" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M1.4 3.6 a9.5 9.5 0 0 1 13.2 0" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+      </span>
+      <span class="mb-item mb-icon mb-batt" title="Battery">
+        <span id="mb-batt-label" class="mb-batt-label">100%</span>
+        <span class="mb-batt-body"><span id="mb-batt-fill" class="mb-batt-fill"></span></span>
+        <span class="mb-batt-tip"></span>
+      </span>
+      <span class="mb-item mb-status" id="mb-net" title="Edge status">&#9679;</span>
+      <span class="mb-item" id="mb-clock">--:--</span>
+    </div>
+    <div id="mb-dropdown" class="mb-dropdown" hidden></div>
+  </header>
+
+  <!-- Desktop -->
+  <main id="desktop">
+    <div id="windows"></div>
+  </main>
+
+  <!-- Dock -->
+  <nav id="dock"><div id="dock-inner"></div></nav>
+
+  <script type="module" src="/js/main.js"></script>
+</body>
+</html>

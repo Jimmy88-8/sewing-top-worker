@@ -1,0 +1,294 @@
+/* ============================================================
+   SewingOS design system — tokens + window chrome
+   One source of truth: radius, shadow, type, color, motion all
+   derive from the tokens below. Glass surfaces derive opacity
+   from the single --glass knob (macOS 27 Liquid Glass slider).
+   ============================================================ */
+
+:root {
+  /* layout */
+  --menubar-h: 28px;
+
+  /* type scale */
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue",
+    "Segoe UI", Arial, sans-serif;
+  --font-mono: "SF Mono", Menlo, Monaco, "Cascadia Mono", "Courier New", monospace;
+  --fs-xs: 11px;   /* labels, captions */
+  --fs-sm: 12px;   /* secondary text */
+  --fs-md: 13px;   /* body / controls */
+  --fs-lg: 15px;   /* emphasized */
+  --fs-xl: 22px;   /* display */
+
+  /* color: text & separators (dark surfaces) */
+  --text-1: rgba(255, 255, 255, 0.92);
+  --text-2: rgba(255, 255, 255, 0.60);
+  --text-3: rgba(255, 255, 255, 0.36);
+  --sep: rgba(255, 255, 255, 0.08);
+
+  /* color: semantic */
+  --accent: #ff9f0a;
+  --ok: #30d158;
+  --bad: #ff453a;
+
+  /* interaction fills */
+  --fill-hover: rgba(255, 255, 255, 0.08);
+  --fill-active: rgba(255, 255, 255, 0.14);
+  --fill-selected: rgba(255, 159, 10, 0.22);
+
+  /* Liquid Glass: 0 = ultra-clear … 1 = fully tinted */
+  --glass: 0.55;
+  --glass-a: calc(0.18 + 0.62 * var(--glass));
+  --glass-a-strong: calc(0.35 + 0.55 * var(--glass));
+  --glass-edge: rgba(255, 255, 255, 0.22);
+  --blur: blur(44px) saturate(1.9);
+
+  /* radius scale */
+  --r-xs: 6px;    /* small controls, menu items */
+  --r-sm: 10px;   /* cards, inputs */
+  --r-md: 14px;   /* windows, popovers */
+  --r-lg: 24px;   /* dock */
+
+  /* elevation */
+  --shadow-1: 0 8px 24px rgba(0, 0, 0, 0.30);                                        /* resting */
+  --shadow-2: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 22px 60px rgba(0, 0, 0, 0.50); /* floating */
+  --shadow-3: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 28px 80px rgba(0, 0, 0, 0.55); /* modal */
+
+  /* motion */
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --t-fast: 120ms;
+  --t-med: 200ms;
+  --t-slow: 320ms;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  font-family: var(--font-ui);
+  font-size: var(--fs-md);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+button { font-family: inherit; }
+
+/* one focus language everywhere */
+:focus { outline: none; }
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: var(--r-xs);
+}
+
+body {
+  background:
+    radial-gradient(1200px 800px at 70% 20%, #3b2f63 0%, transparent 60%),
+    linear-gradient(160deg, #0b1026 0%, #1a1440 45%, #2c1a52 100%);
+}
+
+/* ---------- boot screen ---------- */
+
+#boot {
+  position: fixed; inset: 0; z-index: 1000;
+  background: #000;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 28px;
+  transition: opacity 0.6s var(--ease);
+}
+#boot.done { opacity: 0; pointer-events: none; }
+.boot-logo { color: var(--text-1); font-size: 32px; font-weight: 600; letter-spacing: 0.5px; }
+.boot-bar { width: 220px; height: 4px; border-radius: 2px; background: #2a2a2a; overflow: hidden; }
+.boot-bar-fill {
+  width: 0; height: 100%; border-radius: 2px; background: #ddd;
+  animation: bootfill 1.4s var(--ease) forwards;
+}
+@keyframes bootfill { to { width: 100%; } }
+
+/* ---------- menu bar (fully transparent, Golden Gate) ---------- */
+
+#menubar {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 500;
+  height: var(--menubar-h);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 10px;
+  background: linear-gradient(rgba(10, 10, 16, calc(0.10 + 0.38 * var(--glass))), rgba(10, 10, 16, 0));
+  color: var(--text-1);
+  font-size: var(--fs-md);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+#menubar svg { filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.5)); }
+
+.mb-left, .mb-right { display: flex; align-items: center; gap: 2px; }
+.mb-item {
+  background: none; border: 0; color: inherit; font: inherit;
+  padding: 3px 9px; border-radius: var(--r-xs); cursor: default; line-height: 1;
+  transition: background var(--t-fast) var(--ease);
+}
+.mb-item:hover { background: var(--fill-hover); }
+.mb-item:active { background: var(--fill-active); }
+.mb-logo { font-size: 15px; color: var(--accent); }
+.mb-appname { font-weight: 700; }
+.mb-status { font-size: 9px; color: var(--ok); }
+.mb-status.off { color: var(--bad); }
+#mb-clock { font-variant-numeric: tabular-nums; }
+
+.mb-dropdown {
+  position: fixed; top: calc(var(--menubar-h) + 4px); z-index: 600;
+  min-width: 210px; padding: 5px;
+  background: rgba(34, 34, 44, var(--glass-a-strong));
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border: 0.5px solid var(--glass-edge);
+  border-radius: calc(var(--r-md) - 2px);
+  box-shadow: var(--shadow-3);
+  transform-origin: top left;
+  animation: popin var(--t-fast) var(--ease);
+}
+@keyframes popin { from { opacity: 0; transform: scale(0.97) translateY(-2px); } }
+.mb-dropdown button {
+  display: block; width: 100%; text-align: left;
+  background: none; border: 0; color: var(--text-1); font: inherit; font-size: var(--fs-md);
+  padding: 5px 12px; border-radius: var(--r-xs); cursor: default;
+}
+.mb-dropdown button:hover { background: var(--accent); color: #1a1208; }
+.mb-dropdown hr { border: 0; border-top: 1px solid var(--sep); margin: 5px 10px; }
+
+/* ---------- desktop ---------- */
+
+#desktop {
+  position: fixed;
+  top: var(--menubar-h); bottom: 0; left: 0; right: 0;
+  overflow: hidden;
+}
+
+/* ---------- windows (Liquid Glass slabs) ---------- */
+
+.window {
+  position: absolute;
+  min-width: 320px; min-height: 200px;
+  display: flex; flex-direction: column;
+  border-radius: var(--r-md);
+  background: rgba(26, 26, 32, var(--glass-a));
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border: 0.5px solid var(--glass-edge);
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+  transition: opacity var(--t-med) var(--ease), transform var(--t-med) var(--ease),
+              box-shadow var(--t-med) var(--ease);
+}
+.window.opening { opacity: 0; transform: scale(0.96); }
+.window.minimized { opacity: 0; transform: scale(0.7) translateY(40vh); pointer-events: none; transition-duration: var(--t-slow); }
+.window:not(.focused) { box-shadow: var(--shadow-1); }
+.window:not(.focused) .titlebar { color: var(--text-3); }
+
+.titlebar {
+  height: 36px; flex: 0 0 auto;
+  display: flex; align-items: center;
+  padding: 0 12px;
+  background: linear-gradient(rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.02));
+  border-bottom: 0.5px solid var(--sep);
+  color: var(--text-1); font-size: var(--fs-md); font-weight: 600;
+  cursor: default;
+}
+.traffic { display: flex; gap: 8px; margin-right: 12px; }
+.traffic button {
+  width: 12px; height: 12px; border-radius: 50%; border: 0; padding: 0;
+  cursor: default; position: relative;
+  transition: filter var(--t-fast) var(--ease);
+}
+.traffic button:active { filter: brightness(0.75); }
+.t-close { background: #ff5f57; }
+.t-min   { background: #febc2e; }
+.t-max   { background: #28c840; }
+.window:not(.focused) .traffic button { background: rgba(255, 255, 255, 0.22); }
+.traffic button span {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9px; line-height: 1; color: rgba(0, 0, 0, 0.55);
+  opacity: 0; transition: opacity var(--t-fast) var(--ease);
+}
+.traffic:hover button span { opacity: 1; }
+.win-title {
+  flex: 1; text-align: center; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+  margin-right: 56px; /* visually centers against traffic lights */
+}
+
+.win-body {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+  overflow: auto;
+  color: var(--text-1);
+}
+
+.win-resize { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; }
+
+/* ---------- dock ---------- */
+
+#dock {
+  position: fixed; bottom: 8px; left: 0; right: 0; z-index: 500;
+  display: flex; justify-content: center; pointer-events: none;
+}
+#dock-inner {
+  pointer-events: auto;
+  display: flex; align-items: flex-end; gap: 7px;
+  padding: 8px 10px;
+  background: rgba(40, 40, 52, calc(var(--glass-a) * 0.8));
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border: 0.5px solid var(--glass-edge);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-2);
+}
+.dock-item {
+  position: relative;
+  width: 48px; height: 48px;
+  border: 0; padding: 0;
+  background: none;
+  cursor: default;
+  transform-origin: 50% 100%;
+  transition: transform var(--t-fast) var(--ease);
+}
+.dock-item .app-ic {
+  width: 100%; height: 100%; display: block;
+  filter: drop-shadow(0 5px 10px rgba(0, 0, 0, 0.35));
+}
+.dock-item:active .app-ic { filter: drop-shadow(0 5px 10px rgba(0, 0, 0, 0.35)) brightness(0.78); }
+.dock-item.running::after {
+  content: ""; position: absolute; bottom: -6px; left: 50%;
+  width: 4px; height: 4px; border-radius: 50%;
+  transform: translateX(-50%);
+  background: rgba(255, 255, 255, 0.85);
+}
+.dock-item .tip {
+  position: absolute; bottom: 62px; left: 50%; transform: translateX(-50%);
+  padding: 4px 11px; border-radius: var(--r-xs); white-space: nowrap;
+  background: rgba(34, 34, 44, 0.92); color: var(--text-1);
+  font-size: var(--fs-sm); font-family: var(--font-ui);
+  border: 0.5px solid var(--glass-edge);
+  opacity: 0; pointer-events: none; transition: opacity var(--t-fast) var(--ease);
+}
+.dock-item:hover .tip { opacity: 1; }
+.dock-sep { width: 1px; align-self: stretch; margin: 6px 3px; background: var(--sep); }
+
+/* ---------- generic app content ---------- */
+
+.app-pad { padding: 22px; line-height: 1.6; font-size: var(--fs-md); }
+.app-pad h1 { font-size: 19px; font-weight: 600; margin-bottom: 10px; }
+.app-pad h2 { font-size: var(--fs-xs); font-weight: 600; letter-spacing: 0.6px; text-transform: uppercase; margin: 16px 0 6px; color: var(--text-2); }
+.app-pad p { color: var(--text-2); }
+.app-pad b, .app-pad code { color: var(--text-1); }
+.app-pad a { color: #6ab7ff; }
+.app-pad code {
+  font-family: var(--font-mono); font-size: var(--fs-sm);
+  background: var(--fill-hover); padding: 1px 5px; border-radius: 4px;
+}
+
+.notes-area {
+  flex: 1; width: 100%; resize: none; border: 0; outline: none;
+  background: rgba(31, 31, 36, 0.75); color: var(--text-1);
+  font-family: var(--font-ui); font-size: 14px; line-height: 1.6;
+  padding: 16px; user-select: text;
+}

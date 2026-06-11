@@ -1,0 +1,16 @@
+{
+  "name": "sewing-top-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "SewingOS — a macOS-style web desktop with a Bloomberg-style Market Terminal, on Cloudflare Workers",
+  "scripts": {
+    "dev": "node scripts/dev-server.mjs",
+    "dev:wrangler": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

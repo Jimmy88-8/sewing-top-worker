@@ -1,0 +1,6 @@
+node_modules/
+.wrangler/
+.dev.vars
+*.local
+.DS_Store
+15-Sequoia-Sunrise.png

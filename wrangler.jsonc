@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sewing-top-worker",
+  "main": "src/index.js",
+  "compatibility_date": "2026-06-01",
+
+  // Static Assets: everything in ./public is served directly by Cloudflare.
+  // Requests that don't match a file fall through to the Worker (src/index.js),
+  // which handles /api/* and returns the SPA shell for anything else.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+
+  "observability": {
+    "enabled": true
+  }
+
+  // After the sewing.top zone is added to your Cloudflare account,
+  // uncomment to bind the custom domain (or attach it in the dashboard):
+  // "routes": [
+  //   { "pattern": "sewing.top", "custom_domain": true },
+  //   { "pattern": "www.sewing.top", "custom_domain": true }
+  // ]
+}
