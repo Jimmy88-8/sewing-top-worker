@@ -1,10 +1,12 @@
 /**
  * IBKR Desktop-inspired paper trading workspace.
  *
- * Market data comes from the worker API (/api/quotes, /api/history, /api/news)
- * and degrades gracefully to a bundled simulation snapshot when offline.
+ * Market data comes from the worker API (/api/quotes, /api/history, /api/news,
+ * /api/search) and degrades gracefully to a bundled simulation snapshot when
+ * offline. Any Yahoo ticker can be searched, charted, watched, and traded.
  * Order execution is a local paper-trading engine (positions, orders, trades,
- * realized/unrealized P&L) persisted to localStorage. No real orders are sent.
+ * realized/unrealized P&L; Market/Limit/Stop) persisted to localStorage.
+ * No real orders are sent.
  */
 
 const FAVORITES = ["SPY", "QQQ", "AAPL", "AMZN", "TSLA", "MSFT", "META", "NVDA", "GOOGL"];
@@ -20,11 +22,6 @@ const SEED_QUOTES = [
   { symbol: "NVDA", name: "NVIDIA CORP", last: 203.06, chg: 2.64, pct: 1.32, volume: 166000000 },
   { symbol: "GOOGL", name: "ALPHABET INC-CL A", last: 357.80, chg: 1.42, pct: 0.40, volume: 29400000 },
 ];
-
-const MKT_CAP = {
-  NVDA: "4,850B", AAPL: "4,283B", GOOGL: "4,322B", MSFT: "2,952B", AMZN: "2,560B",
-  TSLA: "1,490B", META: "1,484B", SPY: "—", QQQ: "—",
-};
 
 const NAV = [
   ["portfolio", "chart-pie", "Portfolio"],
@@ -47,6 +44,8 @@ const CHART_RANGES = ["1D", "5D", "1M", "6M", "1Y"];
 const RAIL_RANGES = [["Today", "1D"], ["1W", "5D"], ["1M", "1M"], ["6M", "6M"], ["1Y", "1Y"]];
 
 const STORE_KEY = "ibkr-paper-v1";
+const WATCH_KEY = "ibkr-watchlist-v1";
+const WATCH_MAX = 30;
 const DEFAULT_ACCOUNT = { cash: 1_000_000, positions: {}, orders: [], trades: [], realized: 0, dayStart: null };
 
 const icon = (name) => `<img src="/icons/ibkr-ui/${name}.svg" alt="" draggable="false">`;
@@ -80,6 +79,16 @@ function loadAccount() {
   return structuredClone(DEFAULT_ACCOUNT);
 }
 
+function loadWatchlist() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(WATCH_KEY));
+    if (Array.isArray(saved) && saved.length) {
+      return [...new Set(saved.filter((s) => typeof s === "string"))].slice(0, WATCH_MAX);
+    }
+  } catch { /* corrupted store -> defaults */ }
+  return [...FAVORITES];
+}
+
 export function createIBKRDesktop() {
   const state = {
     mode: "paper",
@@ -88,15 +97,23 @@ export function createIBKRDesktop() {
     user: "",
     page: "portfolio",
     portfolioTab: "Positions",
+    quoteTab: "Charts",
+    moversTab: "Top Gainers",
+    newsView: "Daily Overview",
     selected: "SPY",
     chartRange: "1D",
     railRange: "Today",
     quotes: new Map(SEED_QUOTES.map((q) => [q.symbol, normalizeQuote(q, null)])),
     history: new Map(),  // `${symbol}|${range}` -> { candles, meta, src }
     news: null,          // { items, src }
+    movers: null,        // { gainers, losers, actives, trending, src, t }
+    symNews: new Map(),  // symbols key -> { items, src, t }
+    fundamentals: new Map(), // symbol -> { data, t } | { error, t }
     account: loadAccount(),
+    watchlist: loadWatchlist(),
     live: false,
     renderSeq: 0,
+    searchSeq: 0,
     orderSeq: 0,
     timers: [],
   };
@@ -107,6 +124,24 @@ export function createIBKRDesktop() {
 
   function saveAccount() {
     try { localStorage.setItem(STORE_KEY, JSON.stringify(state.account)); } catch { /* private mode */ }
+  }
+
+  function saveWatchlist() {
+    try { localStorage.setItem(WATCH_KEY, JSON.stringify(state.watchlist)); } catch { /* private mode */ }
+  }
+
+  function toggleWatch(symbol) {
+    const index = state.watchlist.indexOf(symbol);
+    if (index >= 0) {
+      state.watchlist.splice(index, 1);
+      toast(`${symbol} removed from watchlist`);
+    } else {
+      if (state.watchlist.length >= WATCH_MAX) return toast(`Watchlist is full (${WATCH_MAX} symbols).`);
+      state.watchlist.push(symbol);
+      toast(`${symbol} added to watchlist`);
+    }
+    saveWatchlist();
+    renderPage(true);
   }
 
   function nextId() {
@@ -135,27 +170,34 @@ export function createIBKRDesktop() {
     saveAccount();
   }
 
-  function placeOrder(symbol, side, qty, type, limit) {
+  function placeOrder(symbol, side, qty, type, price) {
     const q = quote(symbol);
     qty = Math.max(1, Math.floor(Number(qty) || 0));
+    price = Number(price);
     const stats = accountStats();
-    const refPrice = type === "Market" ? (side === "BUY" ? q.ask : q.bid) : Number(limit);
-    if (!Number.isFinite(refPrice) || refPrice <= 0) return { error: "Enter a valid limit price." };
+    if (type !== "Market" && (!Number.isFinite(price) || price <= 0)) {
+      return { error: `Enter a valid ${type === "Stop" ? "stop" : "limit"} price.` };
+    }
+    const refPrice = type === "Market" ? (side === "BUY" ? q.ask : q.bid) : price;
     if (side === "BUY" && qty * refPrice > stats.buyingPower) return { error: "Insufficient buying power for this order." };
     const order = {
       id: nextId(), symbol, side, type, qty,
-      limit: type === "Limit" ? Number(limit) : null,
+      limit: type === "Limit" ? price : null,
+      stop: type === "Stop" ? price : null,
       status: "Working", t: Date.now(),
     };
-    const marketable = type === "Market" || (side === "BUY" ? order.limit >= q.ask : order.limit <= q.bid);
+    // Stop triggers when last trades through it; an already-triggered stop fills at market.
+    const triggered = type === "Stop" && (side === "BUY" ? q.last >= price : q.last <= price);
+    const marketable = type === "Market" || triggered
+      || (type === "Limit" && (side === "BUY" ? price >= q.ask : price <= q.bid));
     if (marketable) {
-      const price = type === "Market"
-        ? (side === "BUY" ? q.ask : q.bid)
-        : (side === "BUY" ? Math.min(order.limit, q.ask) : Math.max(order.limit, q.bid));
+      const fill = type === "Limit"
+        ? (side === "BUY" ? Math.min(price, q.ask) : Math.max(price, q.bid))
+        : (side === "BUY" ? q.ask : q.bid);
       order.status = "Filled";
-      order.fillPrice = price;
+      order.fillPrice = fill;
       order.fillT = Date.now();
-      applyFill(symbol, side, qty, price);
+      applyFill(symbol, side, qty, fill);
     }
     state.account.orders.unshift(order);
     state.account.orders = state.account.orders.slice(0, 200);
@@ -177,14 +219,19 @@ export function createIBKRDesktop() {
       if (order.status !== "Working") continue;
       const q = state.quotes.get(order.symbol);
       if (!q) continue;
-      if (order.side === "BUY" ? q.ask <= order.limit : q.bid >= order.limit) {
-        order.status = "Filled";
-        order.fillPrice = order.limit;
-        order.fillT = Date.now();
-        applyFill(order.symbol, order.side, order.qty, order.limit);
-        toast(`${order.side} ${order.qty} ${order.symbol} filled @ ${number(order.limit)}`);
-        filled = true;
+      let fill = null;
+      if (order.limit != null) {
+        if (order.side === "BUY" ? q.ask <= order.limit : q.bid >= order.limit) fill = order.limit;
+      } else if (order.stop != null) {
+        if (order.side === "BUY" ? q.last >= order.stop : q.last <= order.stop) fill = order.side === "BUY" ? q.ask : q.bid;
       }
+      if (fill == null) continue;
+      order.status = "Filled";
+      order.fillPrice = fill;
+      order.fillT = Date.now();
+      applyFill(order.symbol, order.side, order.qty, fill);
+      toast(`${order.side} ${order.qty} ${order.symbol} filled @ ${number(fill)}`);
+      filled = true;
     }
     if (filled) saveAccount();
   }
@@ -217,9 +264,32 @@ export function createIBKRDesktop() {
     return state.quotes.get(symbol) || state.quotes.get("SPY") || normalizeQuote(SEED_QUOTES[0], null);
   }
 
+  // Ensure a symbol exists in the quote map (placeholder until the next
+  // refresh resolves it through the worker) and open its Quote page.
+  function selectSymbol(symbol, name, kind) {
+    if (!state.quotes.has(symbol)) {
+      state.quotes.set(symbol, normalizeQuote({ symbol, name: name || symbol, kind: kind || "Equity", last: 0, chg: 0, pct: 0, src: "pending" }, null));
+      refreshQuotes();
+    }
+    state.selected = symbol;
+    state.page = "quote";
+    root.querySelectorAll("[data-page]").forEach((item) => item.classList.toggle("active", item.dataset.page === "quote"));
+    renderPage();
+  }
+
+  // Symbols beyond the worker's registry that the user is watching, holding,
+  // or viewing; the worker resolves them from Yahoo on the fly.
+  function extraSymbols() {
+    return [...new Set([
+      ...state.watchlist,
+      ...Object.keys(state.account.positions),
+      state.selected,
+    ])].join(",");
+  }
+
   async function refreshQuotes() {
     try {
-      const response = await fetch("/api/quotes");
+      const response = await fetch(`/api/quotes?extra=${encodeURIComponent(extraSymbols())}`);
       if (!response.ok) return;
       const data = await response.json();
       const rows = data.quotes ?? [];
@@ -264,6 +334,54 @@ export function createIBKRDesktop() {
       state.news = await response.json();
       if (state.screen === "workspace" && ["news", "layouts"].includes(state.page)) updateLive();
     } catch { /* keep previous headlines */ }
+  }
+
+  // US market movers (gainers / losers / actives / trending). Rows double as
+  // quote seeds so any screener symbol can be charted and traded immediately.
+  async function loadMovers(force = false) {
+    if (!force && state.movers && Date.now() - state.movers.t < 60_000) return state.movers;
+    try {
+      const response = await fetch("/api/movers");
+      if (!response.ok) return state.movers;
+      const data = await response.json();
+      for (const row of [...data.gainers, ...data.losers, ...data.actives, ...(data.trending ?? [])]) {
+        const prior = state.quotes.get(row.symbol) || null;
+        state.quotes.set(row.symbol, normalizeQuote(row, prior));
+      }
+      state.movers = { ...data, t: Date.now() };
+    } catch { /* keep previous movers */ }
+    return state.movers;
+  }
+
+  // Headlines for one or more symbols, cached briefly per symbol set.
+  async function loadSymbolNews(symbols) {
+    const key = symbols.join(",");
+    const hit = state.symNews.get(key);
+    if (hit && Date.now() - hit.t < 180_000) return hit;
+    try {
+      const response = await fetch(`/api/news?symbols=${encodeURIComponent(key)}`);
+      if (!response.ok) throw new Error("news unavailable");
+      const data = await response.json();
+      const entry = { items: data.items ?? [], src: data.src, t: Date.now() };
+      state.symNews.set(key, entry);
+      return entry;
+    } catch {
+      return hit ?? { items: [], src: "none", t: Date.now() };
+    }
+  }
+
+  async function loadFundamentals(symbol) {
+    const hit = state.fundamentals.get(symbol);
+    if (hit && Date.now() - hit.t < 600_000) return hit;
+    try {
+      const response = await fetch(`/api/fundamentals?symbol=${encodeURIComponent(symbol)}`);
+      if (!response.ok) throw new Error("fundamentals unavailable");
+      const entry = { data: await response.json(), t: Date.now() };
+      state.fundamentals.set(symbol, entry);
+      return entry;
+    } catch {
+      return hit ?? { error: true, t: Date.now() };
+    }
   }
 
   function simSeries(symbol) {
@@ -378,7 +496,8 @@ export function createIBKRDesktop() {
       <div class="ib-shell">
         <header class="ib-topbar">
           <div class="ib-window-dots light"><i></i><i></i><i></i></div>
-          <label class="ib-global-search">${icon("magnifying-glass")}<input placeholder="Search"><kbd>⌘ + K</kbd></label>
+          <label class="ib-global-search">${icon("magnifying-glass")}<input placeholder="Search" autocomplete="off"><kbd>⌘ + K</kbd></label>
+          <div class="ib-search-results" data-global-results hidden></div>
           <button class="ib-arrow">‹</button><button class="ib-arrow">›</button>
           <span class="ib-top-logo"><img src="/images/ibkr/ibkr-logo.svg" alt="IBKR"></span>
           <div class="ib-account-summary">
@@ -422,29 +541,69 @@ export function createIBKRDesktop() {
       renderPage();
     }));
     const search = root.querySelector(".ib-global-search input");
-    search.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter") return;
-      const text = event.currentTarget.value.trim().toUpperCase();
-      if (!text) return;
-      const hit = state.quotes.has(text)
-        ? text
-        : [...state.quotes.values()].find((q) => q.name?.toUpperCase().includes(text))?.symbol;
-      if (hit) {
-        state.selected = hit;
-        state.page = "quote";
-        root.querySelectorAll("[data-page]").forEach((item) => item.classList.toggle("active", item.dataset.page === "quote"));
-        event.currentTarget.value = "";
-        renderPage();
-      } else {
-        toast(`No match for "${text}"`);
-      }
-    });
+    attachSearch(search, root.querySelector("[data-global-results]"), (hit) => selectSymbol(hit.symbol, hit.name, hit.kind));
     root.addEventListener("keydown", (event) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         search.focus();
       }
     });
+  }
+
+  // Live symbol lookup against /api/search with a typeahead dropdown.
+  // Enter picks the top result; loaded quotes are matched as an offline fallback.
+  function attachSearch(input, listHost, onPick) {
+    let debounce = null;
+    let results = [];
+    const close = () => {
+      results = [];
+      listHost.hidden = true;
+      listHost.innerHTML = "";
+    };
+    const pick = (hit) => {
+      close();
+      input.value = "";
+      onPick(hit);
+    };
+    const renderList = () => {
+      listHost.innerHTML = results.map((r, i) =>
+        `<button data-pick="${i}"><b>${escapeHtml(r.symbol)}</b><span>${escapeHtml(r.name)}</span><small>${escapeHtml(r.kind || "")}${r.exchange ? " · " + escapeHtml(r.exchange) : ""}</small></button>`).join("");
+      listHost.hidden = !results.length;
+      listHost.querySelectorAll("[data-pick]").forEach((button) =>
+        button.addEventListener("click", () => pick(results[Number(button.dataset.pick)])));
+    };
+    const run = async (text) => {
+      const seq = ++state.searchSeq;
+      try {
+        const response = await fetch(`/api/search?q=${encodeURIComponent(text)}`);
+        if (!response.ok) return;
+        const data = await response.json();
+        if (seq !== state.searchSeq || input.value.trim() !== text) return;
+        results = data.results ?? [];
+        renderList();
+      } catch { /* offline: Enter still matches already-loaded symbols */ }
+    };
+    input.addEventListener("input", () => {
+      const text = input.value.trim();
+      clearTimeout(debounce);
+      if (text.length < 2) return close();
+      debounce = setTimeout(() => run(text), 220);
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") return close();
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      const text = input.value.trim().toUpperCase();
+      if (!text) return;
+      const local = state.quotes.has(text)
+        ? { symbol: text }
+        : [...state.quotes.values()].find((q) => q.name?.toUpperCase().includes(text));
+      const hit = results[0] ?? (local ? { symbol: local.symbol ?? text, name: local.name, kind: local.kind } : null);
+      if (hit) pick(hit);
+      else toast(`No match for "${text}"`);
+    });
+    // Delay so a click on a result lands before the list closes.
+    input.addEventListener("blur", () => state.timers.push(setTimeout(close, 200)));
   }
 
   function updateTopbar() {
@@ -515,7 +674,7 @@ export function createIBKRDesktop() {
     return `
       <section class="ib-page ib-split-page">
         <div class="ib-main-panel">
-          <div class="ib-section-title"><b>Favorites</b><button>+</button><select><option>Watchlist View</option></select>${icon("cog-6-tooth")}</div>
+          <div class="ib-section-title"><b>Favorites</b><button data-add-watch title="Add symbol">+</button><select><option>Watchlist View</option></select>${icon("cog-6-tooth")}</div>
           <div class="ib-panel-scroll">${watchTable()}</div>
         </div>
         ${quoteRail(true)}
@@ -524,45 +683,110 @@ export function createIBKRDesktop() {
 
   function quotePage() {
     const q = quote(state.selected);
-    return `
-      <section class="ib-page ib-quote-grid">
-        <div class="ib-mini-watch"><select><option>Favorites</option></select>${miniWatch()}</div>
-        <div class="ib-chart-workspace">
-          ${tabs(["Charts", "Options", "Connections", "News", "Fundamentals"], "Charts")}
+    const body = state.quoteTab === "News" ? `
+          <div class="ib-quote-panel" data-sym-news><p class="ib-panel-hint">Loading ${q.symbol} headlines…</p></div>`
+      : state.quoteTab === "Fundamentals" ? `
+          <div class="ib-quote-panel" data-fundamentals><p class="ib-panel-hint">Loading ${q.symbol} fundamentals…</p></div>`
+      : `
           <div class="ib-chart-toolbar"><b>⊕</b><span>${state.chartRange}</span><span>♮</span><span>ƒx</span><span>▦</span><span>↶</span><span>↷</span><span>□</span><b>Unnamed⌄</b><span>◉</span><span>⬡</span><span>⛶</span></div>
           <div class="ib-chart-title"><b>${q.symbol} · ${escapeHtml(q.name)} · ${state.chartRange} · ${q.exchange || "SMART"}</b><span data-ohlc class="${tone(q.chg)}">--</span><span>Volume <b data-chartvol class="${tone(q.chg)}">--</b></span></div>
           <canvas class="ib-candle-chart" data-chart-symbol="${q.symbol}"></canvas>
-          <div class="ib-chart-bottom">${CHART_RANGES.map((key) => `<span data-range="${key}" class="${state.chartRange === key ? "active" : ""}">${key}</span>`).join("")}<b>${new Date().toLocaleTimeString("en-GB")} UTC+8</b><span>RTH</span><span>%</span><span>log</span><span class="active">auto</span></div>
+          <div class="ib-chart-bottom">${CHART_RANGES.map((key) => `<span data-range="${key}" class="${state.chartRange === key ? "active" : ""}">${key}</span>`).join("")}<b>${new Date().toLocaleTimeString("en-GB")} UTC+8</b><span>RTH</span><span>%</span><span>log</span><span class="active">auto</span></div>`;
+    return `
+      <section class="ib-page ib-quote-grid">
+        <div class="ib-mini-watch"><select><option>Favorites</option></select>${miniWatch()}</div>
+        <div class="ib-chart-workspace ${state.quoteTab === "Charts" ? "" : "panel-mode"}">
+          ${tabs(["Charts", "News", "Fundamentals"], state.quoteTab, "quote-tab")}
+          ${body}
         </div>
         ${quoteRail(true)}
       </section>`;
   }
 
+  function symbolNewsList(items, src) {
+    if (!items.length) return `<p class="ib-panel-hint">No recent headlines.</p>`;
+    return `
+      <h2 class="ib-panel-heading">Latest Headlines ${src === "live" ? "" : "(simulated)"}</h2>
+      ${items.map((n) => `<p class="ib-news-line"><small>${new Date(n.t).toLocaleDateString("en-US", { month: "short", day: "numeric" })} ${clock(n.t)}</small>${n.symbol ? `<b class="ib-sym-chip">${escapeHtml(n.symbol)}</b>` : ""}<b>${escapeHtml(n.source)}</b>${n.link ? `<a href="${encodeURI(n.link)}" target="_blank" rel="noopener noreferrer">${escapeHtml(n.headline)}</a>` : escapeHtml(n.headline)}</p>`).join("")}`;
+  }
+
+  function fundamentalsPanel(f) {
+    if (!f) return `<p class="ib-panel-hint">Fundamentals unavailable for this symbol.</p>`;
+    const money = (v) => v == null ? "--" : compact(v);
+    const ratio = (v, digits = 2) => v == null ? "--" : number(v, digits);
+    const pctOf = (v) => v == null ? "--" : `${number(v * 100, 2)}%`;
+    const cell = (label, value, cls = "") => `<span><small>${label}</small><b class="${cls}">${value}</b></span>`;
+    return `
+      <header class="ib-fund-head">
+        <div><h2>${escapeHtml(f.name ?? f.symbol)}</h2><p>${[f.sector, f.industry, f.employees ? `${number(f.employees, 0)} employees` : null].filter(Boolean).map(escapeHtml).join(" · ") || "—"}</p></div>
+        ${f.recommendation ? `<div class="ib-fund-reco ${["buy", "strong_buy"].includes(f.recommendation) ? "up" : f.recommendation === "hold" ? "" : "down"}"><small>Analyst Consensus${f.analystCount ? ` (${f.analystCount})` : ""}</small><b>${escapeHtml(f.recommendation.replace("_", " ").toUpperCase())}</b>${f.targetMeanPrice != null ? `<span>Target ${number(f.targetMeanPrice)}</span>` : ""}</div>` : ""}
+      </header>
+      <div class="ib-fund-grid">
+        ${cell("Market Cap", money(f.marketCap))}
+        ${cell("P/E (TTM)", ratio(f.trailingPE))}
+        ${cell("Forward P/E", ratio(f.forwardPE))}
+        ${cell("EPS (TTM)", ratio(f.eps))}
+        ${cell("Beta", ratio(f.beta))}
+        ${cell("Dividend Yield", pctOf(f.dividendYield))}
+        ${cell("Payout Ratio", pctOf(f.payoutRatio))}
+        ${cell("Profit Margin", pctOf(f.profitMargin))}
+        ${cell("Gross Margin", pctOf(f.grossMargin))}
+        ${cell("Operating Margin", pctOf(f.operatingMargin))}
+        ${cell("Revenue (TTM)", money(f.revenue))}
+        ${cell("Revenue Growth", pctOf(f.revenueGrowth), f.revenueGrowth != null ? tone(f.revenueGrowth) : "")}
+        ${cell("Free Cash Flow", money(f.freeCashflow))}
+        ${cell("Total Cash", money(f.totalCash))}
+        ${cell("Total Debt", money(f.totalDebt))}
+        ${cell("Return on Equity", pctOf(f.returnOnEquity))}
+        ${cell("Price / Book", ratio(f.priceToBook))}
+        ${cell("Shares Outstanding", money(f.sharesOutstanding))}
+        ${cell("Avg Volume", money(f.avgVolume))}
+        ${cell("52W Range", f.low52 != null && f.high52 != null ? `${number(f.low52)} – ${number(f.high52)}` : "--")}
+      </div>
+      ${f.summary ? `<article class="ib-fund-profile"><h3>Business Profile</h3><p>${escapeHtml(f.summary)}</p>${f.website ? `<a href="${encodeURI(f.website)}" target="_blank" rel="noopener noreferrer">${escapeHtml(f.website)}</a>` : ""}</article>` : ""}
+      ${f.src === "partial" ? `<p class="ib-fineprint">Extended fundamentals temporarily unavailable — showing core statistics.</p>` : ""}`;
+  }
+
+  const MOVER_TABS = {
+    "Top Gainers": ["gainers", "Top Gainers — US stocks sorted by % gain"],
+    "Top Losers": ["losers", "Top Losers — US stocks sorted by % loss"],
+    "Most Active": ["actives", "Most Active — US stocks by dollar volume"],
+    "Trending": ["trending", "Trending — most-searched US tickers right now"],
+  };
+
   function screenersPage() {
-    const rows = [...state.quotes.values()]
-      .filter((q) => ["Equity", "ETF"].includes(q.kind) || FAVORITES.includes(q.symbol))
-      .sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct));
     return `
       <section class="ib-page ib-screeners">
-        <div class="ib-category-tabs">${["My Screeners", "US Stocks", "Asia Stocks", "EUR Stocks", "ETFs", "Options", "Bonds"].map((x, i) => `<b class="${i === 1 ? "active" : ""}">${x}</b>`).join("")}</div>
-        <div class="ib-market-tabs">${["All US Stocks", "NYSE", "AMEX", "NASDAQ", "Pink Sheets", "Airlines", "Biotech", "Energy", "Financial", "Media", "Retail", "Technology", "SaaS", "E-Commerce"].map((x) => `<span>${x}</span>`).join("")}</div>
+        <div class="ib-category-tabs">${Object.keys(MOVER_TABS).map((x) => `<b data-mover-tab="${x}" class="${state.moversTab === x ? "active" : ""}">${x}</b>`).join("")}<span class="ib-category-note">US STOCKS · LARGE CAP + TRENDING UNIVERSE</span></div>
         <div class="ib-screener-body">
           <aside class="ib-screener-aside">
-            <p>Choose an option below to narrow results.</p>
-            <article class="ai"><b>Configure Screener with AI</b><span>Describe what you're looking for.</span><a>Learn More</a></article>
+            <p>Market-wide movers refresh continuously from live US data.</p>
+            <article class="ai"><b>Search Any US Stock</b><span>Every NYSE / NASDAQ / AMEX ticker is searchable — press ⌘K and type a symbol or company name.</span></article>
             <h3>Screener Types</h3>
-            <article><b>MultiSort Screener</b><span>Rank stocks on a blended score of factors.</span></article>
-            <article><b>Standard Screener</b><span>Define factor ranges to narrow stock results.</span></article>
-            <h3>Popular Screeners</h3>
-            <article><b>Attractive Valuation</b><span>Lowest P/E Ratio, Price/Book Ratio, and highest Cash Flow per share.</span></article>
+            <article data-mover-pick="Top Gainers"><b>Top Gainers</b><span>Largest % advance across the US large-cap universe today.</span></article>
+            <article data-mover-pick="Top Losers"><b>Top Losers</b><span>Largest % decline across the US large-cap universe today.</span></article>
+            <article data-mover-pick="Most Active"><b>Most Active</b><span>Heaviest dollar volume traded today.</span></article>
+            <article data-mover-pick="Trending"><b>Trending</b><span>Tickers spiking in investor attention right now.</span></article>
           </aside>
-          <div class="ib-results">
-            <div class="ib-results-head"><b>⚑ &nbsp; Top Movers — sorted by % change ${state.live ? "(live)" : "(simulated)"}</b><span>Generated at ${clock(Date.now())}</span><a data-refresh>⟳ Refresh results</a></div>
-            <table><thead><tr><th>□</th><th>Financial Instrument</th><th>Company Name</th><th>Last</th><th>Change</th><th>Change %</th><th>Market Cap</th><th>Volume</th><th>52W High</th></tr></thead>
-            <tbody>${rows.map((q) => `<tr data-symbol="${q.symbol}"><td>□</td><td><b>${q.symbol}</b></td><td>${escapeHtml(q.name)}</td><td class="${tone(q.chg)}">${number(q.last, q.dp)}</td><td class="${tone(q.chg)}">${signed(q.chg, "", q.dp)}</td><td class="${tone(q.pct)}">${signed(q.pct, "%")}</td><td>${MKT_CAP[q.symbol] || "—"}</td><td>${compact(q.volume)}</td><td>${q.high52 ? number(q.high52, q.dp) : "--"}</td></tr>`).join("")}</tbody></table>
-          </div>
+          <div class="ib-results" data-movers-host>${moversTable()}</div>
         </div>
       </section>`;
+  }
+
+  function moversTable() {
+    const [key, caption] = MOVER_TABS[state.moversTab] ?? MOVER_TABS["Top Gainers"];
+    const rows = state.movers?.[key] ?? [];
+    const body = rows.length
+      ? rows.map((r) => {
+        const dp = r.last > 0 && r.last < 10 ? 4 : 2;
+        const watched = state.watchlist.includes(r.symbol);
+        return `<tr data-goto-symbol="${r.symbol}"><td><button class="ib-watch-star small ${watched ? "active" : ""}" data-watch-toggle="${r.symbol}" title="${watched ? "Remove from" : "Add to"} watchlist">${watched ? "★" : "☆"}</button></td><td><b>${r.symbol}</b></td><td class="ib-co-name">${escapeHtml(r.name ?? "")}</td><td class="${tone(r.chg)}">${number(r.last, dp)}</td><td class="${tone(r.chg)}">${signed(r.chg, "", dp)}</td><td class="${tone(r.chgPct)}">${signed(r.chgPct, "%")}</td><td>${r.marketCap ? compact(r.marketCap) : "—"}</td><td>${compact(r.volume)}</td><td>${r.high52 ? number(r.high52, dp) : "--"}</td></tr>`;
+      }).join("")
+      : `<tr><td colspan="9" class="ib-empty-row">${state.movers ? "No data for this view right now." : "Loading US market movers…"}</td></tr>`;
+    return `
+      <div class="ib-results-head"><b>⚑ &nbsp; ${caption} ${state.movers?.src === "live" ? "(live)" : state.movers ? "(simulated)" : ""}</b><span>Generated at ${clock(state.movers?.t ?? Date.now())}</span><a data-refresh>⟳ Refresh results</a></div>
+      <table><thead><tr><th></th><th>Financial Instrument</th><th>Company Name</th><th>Last</th><th>Change</th><th>Change %</th><th>Market Cap</th><th>Volume</th><th>52W High</th></tr></thead>
+      <tbody>${body}</tbody></table>`;
   }
 
   function layoutsPage() {
@@ -580,26 +804,41 @@ export function createIBKRDesktop() {
       </section>`;
   }
 
+  function newsViewSymbols() {
+    return state.newsView === "Portfolio News" ? Object.keys(state.account.positions).slice(0, 8)
+      : state.newsView === "Watchlist News" ? state.watchlist.slice(0, 8)
+      : null;
+  }
+
   function newsPage() {
+    const symbols = newsViewSymbols();
+    const overview = state.newsView === "Daily Overview";
     const items = state.news?.items ?? [];
     const hero = items[0];
     const spx = state.quotes.get("SPX");
     const ndx = state.quotes.get("NDX");
     const dji = state.quotes.get("DJI");
     const fmtIdx = (q) => q ? `<b class="${tone(q.pct)}">${signed(q.pct, "%")}</b>` : "<b>--</b>";
+    const feed = overview ? `
+          <div class="ib-headline-feed">
+            <h2>Latest Headlines ${state.news?.src === "live" ? "" : "(simulated)"}</h2>
+            ${items.slice(1, 13).map((n) => `<p><small>${clock(n.t)}</small> <b>${escapeHtml(n.source)}</b> ${n.link ? `<a href="${encodeURI(n.link)}" target="_blank" rel="noopener noreferrer">${escapeHtml(n.headline)}</a>` : escapeHtml(n.headline)}</p>`).join("") || "<p>Loading headlines…</p>"}
+          </div>`
+      : `
+          <div class="ib-headline-feed" data-view-news>
+            ${symbols.length ? `<p class="ib-panel-hint">Loading headlines for ${symbols.map(escapeHtml).join(", ")}…</p>` : `<p class="ib-panel-hint">${state.newsView === "Portfolio News" ? "No open positions yet — paper trade a symbol to follow its news here." : "Watchlist is empty — add symbols to follow their news here."}</p>`}
+          </div>`;
     return `
       <section class="ib-page ib-news-page">
-        <aside class="ib-news-nav">${["Daily Overview", "Portfolio News", "Watchlist News", "Read Later", "Browse", "Manage Subscriptions ↗", "Language Settings"].map((x, i) => `<button class="${i === 0 ? "active" : ""}">${x}</button>`).join("")}<button class="feedback">☁ &nbsp; Give Feedback</button></aside>
+        <aside class="ib-news-nav">${["Daily Overview", "Portfolio News", "Watchlist News"].map((x) => `<button data-news-view="${x}" class="${state.newsView === x ? "active" : ""}">${x}</button>`).join("")}<button class="feedback">☁ &nbsp; Give Feedback</button></aside>
         <main class="ib-news-main">
-          <div class="ib-news-heading"><h1>Daily Overview</h1><label><input placeholder="Search for instruments, asset classes, and topics">${icon("magnifying-glass")}</label></div>
+          <div class="ib-news-heading"><h1>${state.newsView}</h1><label><input data-news-search placeholder="Search any US stock for news & data" autocomplete="off">${icon("magnifying-glass")}</label><div class="ib-search-results ib-news-results" data-news-search-results hidden></div></div>
+          ${overview ? `
           <div class="ib-news-cards">
             <article class="ib-news-hero"><img src="/images/ibkr/news-ai-keyboard.png" alt=""><b>${hero ? escapeHtml(hero.source) : "Companies in the News"}</b><h2>${hero ? escapeHtml(hero.headline) : "Anthropic v. OpenAI: Behind the bitter battle for the future of AI"}</h2></article>
             <article class="ib-market-card"><h2>Market Performance</h2><div><b>U.S.</b> Europe &nbsp; Asia &nbsp; FX</div><div class="ib-indexes"><span>S&amp;P 500 ${fmtIdx(spx)}</span><span>NASDAQ 100 ${fmtIdx(ndx)}</span><span>DOW JONES ${fmtIdx(dji)}</span></div><canvas class="ib-line-chart" data-spark-symbol="SPX"></canvas><footer>Today &nbsp;&nbsp; 5D &nbsp;&nbsp; 1M &nbsp;&nbsp; 1Y &nbsp;&nbsp; 2Y</footer></article>
-          </div>
-          <div class="ib-headline-feed">
-            <h2>Latest Headlines ${state.news?.src === "live" ? "" : "(simulated)"}</h2>
-            ${items.slice(1, 11).map((n) => `<p><small>${clock(n.t)}</small> <b>${escapeHtml(n.source)}</b> ${n.link ? `<a href="${encodeURI(n.link)}" target="_blank" rel="noopener noreferrer">${escapeHtml(n.headline)}</a>` : escapeHtml(n.headline)}</p>`).join("") || "<p>Loading headlines…</p>"}
-          </div>
+          </div>` : ""}
+          ${feed}
         </main>
         ${eventsRail()}
       </section>`;
@@ -647,17 +886,17 @@ export function createIBKRDesktop() {
       const q = state.quotes.get(symbol);
       const last = q?.last ?? pos.avgCost;
       const unrl = (last - pos.avgCost) * pos.qty;
-      return `<tr data-symbol="${symbol}"><td><b>${symbol}</b></td>${compactMode ? "" : `<td>${escapeHtml(q?.name || "")}</td>`}<td class="${pos.qty < 0 ? "down" : ""}">${number(pos.qty, 0)}</td><td>${number(pos.avgCost)}</td><td class="${q ? tone(q.chg) : ""} ib-tick-${q?.dir > 0 ? "up" : q?.dir < 0 ? "down" : "flat"}">${number(last, q?.dp ?? 2)}</td><td>${number(pos.qty * last, 0)}</td><td class="${tone(unrl)}">${signed(unrl, "", 0)}</td>${compactMode ? "" : `<td class="${q ? tone(q.pct) : ""}">${q ? signed(q.pct, "%") : "--"}</td><td><canvas class="ib-spark-cell" data-spark-symbol="${symbol}"></canvas></td>`}</tr>`;
+      return `<tr data-symbol="${symbol}"><td><b>${symbol}</b></td>${compactMode ? "" : `<td>${escapeHtml(q?.name || "")}</td>`}<td class="${pos.qty < 0 ? "down" : ""}">${number(pos.qty, 0)}</td><td>${number(pos.avgCost)}</td><td class="${q ? tone(q.chg) : ""} ib-tick-${q?.dir > 0 ? "up" : q?.dir < 0 ? "down" : "flat"}">${number(last, q?.dp ?? 2)}</td><td>${number(pos.qty * last, 0)}</td><td class="${tone(unrl)}">${signed(unrl, "", 0)}</td>${compactMode ? "" : `<td class="${q ? tone(q.pct) : ""}">${q ? signed(q.pct, "%") : "--"}</td><td><canvas class="ib-spark-cell" data-spark-symbol="${symbol}"></canvas></td><td><button class="ib-cancel" data-close-pos="${symbol}">Close</button></td>`}</tr>`;
     }).join("");
-    const empty = `<tr><td colspan="${compactMode ? 6 : 9}" class="ib-empty-row">No open positions — use Buy Order / Sell Order to start paper trading.</td></tr>`;
-    return `<table class="ib-table ib-portfolio-table"><thead><tr><th>Financial Instrument</th>${compactMode ? "" : "<th>Company Name</th>"}<th>Position</th><th>Avg Price</th><th>Last</th><th>Mkt Value</th><th>Unrlzd P&amp;L</th>${compactMode ? "" : "<th>Change %</th><th>Trend</th>"}</tr></thead><tbody>${rows || empty}<tr class="cash"><td><b>USD CASH</b></td>${compactMode ? "" : "<td></td>"}<td></td><td></td><td></td><td>${number(stats.cash, 0)}</td><td></td>${compactMode ? "" : "<td></td><td></td>"}</tr></tbody></table>`;
+    const empty = `<tr><td colspan="${compactMode ? 6 : 10}" class="ib-empty-row">No open positions — use Buy Order / Sell Order to start paper trading.</td></tr>`;
+    return `<table class="ib-table ib-portfolio-table"><thead><tr><th>Financial Instrument</th>${compactMode ? "" : "<th>Company Name</th>"}<th>Position</th><th>Avg Price</th><th>Last</th><th>Mkt Value</th><th>Unrlzd P&amp;L</th>${compactMode ? "" : "<th>Change %</th><th>Trend</th><th></th>"}</tr></thead><tbody>${rows || empty}<tr class="cash"><td><b>USD CASH</b></td>${compactMode ? "" : "<td></td>"}<td></td><td></td><td></td><td>${number(stats.cash, 0)}</td><td></td>${compactMode ? "" : "<td></td><td></td><td></td>"}</tr></tbody></table>`;
   }
 
   function ordersTable(compactMode = false) {
     const orders = state.account.orders.slice(0, compactMode ? 6 : 50);
-    const rows = orders.map((o) => `<tr><td><b>${o.symbol}</b></td><td class="${o.side === "BUY" ? "blue" : "down"}">${o.side}</td><td>${o.type}</td><td>${number(o.qty, 0)}</td><td>${o.limit != null ? number(o.limit) : "MKT"}</td><td>${o.fillPrice != null ? number(o.fillPrice) : "--"}</td><td class="ib-status ${o.status.toLowerCase()}">${o.status}</td><td>${clock(o.t)}</td>${compactMode ? "" : `<td>${o.status === "Working" ? `<button class="ib-cancel" data-cancel-order="${o.id}">Cancel</button>` : ""}</td>`}</tr>`).join("");
+    const rows = orders.map((o) => `<tr><td><b>${o.symbol}</b></td><td class="${o.side === "BUY" ? "blue" : "down"}">${o.side}</td><td>${o.type}</td><td>${number(o.qty, 0)}</td><td>${o.limit != null ? number(o.limit) : o.stop != null ? `STP ${number(o.stop)}` : "MKT"}</td><td>${o.fillPrice != null ? number(o.fillPrice) : "--"}</td><td class="ib-status ${o.status.toLowerCase()}">${o.status}</td><td>${clock(o.t)}</td>${compactMode ? "" : `<td>${o.status === "Working" ? `<button class="ib-cancel" data-cancel-order="${o.id}">Cancel</button>` : ""}</td>`}</tr>`).join("");
     const empty = `<tr><td colspan="${compactMode ? 8 : 9}" class="ib-empty-row">No orders yet.</td></tr>`;
-    return `<table class="ib-table ib-orders-table"><thead><tr><th>Financial Instrument</th><th>Action</th><th>Type</th><th>Quantity</th><th>Limit</th><th>Fill</th><th>Status</th><th>Time</th>${compactMode ? "" : "<th></th>"}</tr></thead><tbody>${rows || empty}</tbody></table>`;
+    return `<table class="ib-table ib-orders-table"><thead><tr><th>Financial Instrument</th><th>Action</th><th>Type</th><th>Quantity</th><th>Price</th><th>Fill</th><th>Status</th><th>Time</th>${compactMode ? "" : "<th></th>"}</tr></thead><tbody>${rows || empty}</tbody></table>`;
   }
 
   function tradesTable() {
@@ -682,15 +921,18 @@ export function createIBKRDesktop() {
   }
 
   function watchTable() {
-    return `<table class="ib-table ib-watch-table"><thead><tr><th>Financial Instrument</th><th>Company Name</th><th>Bid Size</th><th>Bid</th><th>Ask</th><th>Ask Size</th><th>Last</th><th>Change %</th></tr></thead><tbody>${FAVORITES.map((symbol) => {
-      const q = quote(symbol);
-      return `<tr data-symbol="${q.symbol}" class="${state.selected === q.symbol ? "selected" : ""}"><td><b>${q.symbol}</b></td><td>${escapeHtml(q.name)}</td><td>${sizeFor(q.symbol, "b")}</td><td>${number(q.bid, q.dp)}</td><td>${number(q.ask, q.dp)}</td><td>${sizeFor(q.symbol, "a")}</td><td class="${tone(q.chg)} ib-tick-${q.dir > 0 ? "up" : q.dir < 0 ? "down" : "flat"}">${number(q.last, q.dp)}</td><td class="${tone(q.pct)}">${signed(q.pct, "%")}</td></tr>`;
+    return `<table class="ib-table ib-watch-table"><thead><tr><th>Financial Instrument</th><th>Company Name</th><th>Bid Size</th><th>Bid</th><th>Ask</th><th>Ask Size</th><th>Last</th><th>Change %</th><th></th></tr></thead><tbody>${state.watchlist.map((symbol) => {
+      const q = state.quotes.get(symbol);
+      const unwatch = `<td><button class="ib-unwatch" data-unwatch="${symbol}" title="Remove from watchlist">×</button></td>`;
+      if (!q) return `<tr data-symbol="${symbol}"><td><b>${escapeHtml(symbol)}</b></td><td colspan="7" class="ib-empty-row">Loading…</td>${unwatch}</tr>`;
+      return `<tr data-symbol="${q.symbol}" class="${state.selected === q.symbol ? "selected" : ""}"><td><b>${q.symbol}</b></td><td>${escapeHtml(q.name)}</td><td>${sizeFor(q.symbol, "b")}</td><td>${number(q.bid, q.dp)}</td><td>${number(q.ask, q.dp)}</td><td>${sizeFor(q.symbol, "a")}</td><td class="${tone(q.chg)} ib-tick-${q.dir > 0 ? "up" : q.dir < 0 ? "down" : "flat"}">${number(q.last, q.dp)}</td><td class="${tone(q.pct)}">${signed(q.pct, "%")}</td>${unwatch}</tr>`;
     }).join("")}</tbody></table>`;
   }
 
   function miniWatch() {
-    return FAVORITES.map((symbol) => {
-      const q = quote(symbol);
+    return state.watchlist.map((symbol) => {
+      const q = state.quotes.get(symbol);
+      if (!q) return `<button data-symbol="${escapeHtml(symbol)}"><span><b>${escapeHtml(symbol)}</b><small>Loading…</small></span></button>`;
       return `<button data-symbol="${q.symbol}" class="${state.selected === q.symbol ? "selected" : ""}"><span><b>${q.symbol}</b><small>${escapeHtml(q.name)}</small></span><span><b>${number(q.last, q.dp)}</b><small class="${tone(q.pct)}">${signed(q.pct, "%")}</small></span></button>`;
     }).join("");
   }
@@ -701,12 +943,12 @@ export function createIBKRDesktop() {
     return `
       <aside class="ib-quote-rail">
         <header><span>${escapeHtml(q.name.slice(0, 26))}${q.name.length > 26 ? "…" : ""}</span><span>${q.kind || "Equity"} &nbsp; 🇺🇸</span></header>
-        <div class="ib-quote-name"><b>${q.symbol}</b><span>☆ &nbsp; ♥</span></div>
+        <div class="ib-quote-name"><b>${q.symbol}</b><span><button class="ib-watch-star ${state.watchlist.includes(q.symbol) ? "active" : ""}" data-watch-toggle="${q.symbol}" title="${state.watchlist.includes(q.symbol) ? "Remove from" : "Add to"} watchlist">${state.watchlist.includes(q.symbol) ? "★" : "☆"}</button> &nbsp; ♥</span></div>
         <div class="ib-big-price"><b class="${tone(q.chg)} ib-tick-${q.dir > 0 ? "up" : q.dir < 0 ? "down" : "flat"}">${number(q.last, q.dp)}</b><small>x${sizeFor(q.symbol, "x")}</small><span class="${tone(q.chg)}">${signed(q.chg, "", q.dp)} &nbsp; ${signed(q.pct, "%")}</span><div><small>Ask</small><b class="down">${number(q.ask, q.dp)}</b><small>Bid</small><b class="blue">${number(q.bid, q.dp)}</b></div></div>
         <div class="ib-realtime">${state.live ? "REALTIME PRICE: NON-CONSOLIDATED" : "SIMULATED SNAPSHOT"} <b>⟳ ${state.live ? "LIVE" : "SIM"}</b></div>
         <div class="ib-order-buttons"><button data-order="BUY">Buy Order</button><button data-order="SELL">Sell Order</button><button title="Rapid order">ϟ</button></div>
         ${pos ? `<div class="ib-position-line">Position <b class="${pos.qty < 0 ? "down" : "blue"}">${number(pos.qty, 0)}</b> @ ${number(pos.avgCost)} &nbsp; Unrlzd <b class="${tone((q.last - pos.avgCost) * pos.qty)}">${signed((q.last - pos.avgCost) * pos.qty, "", 0)}</b></div>` : ""}
-        <div class="ib-quote-stats"><div><span>Opening Price <b>${q.open != null ? number(q.open, q.dp) : "--"}</b></span><span>Prior Close <b>${q.prevClose != null ? number(q.prevClose, q.dp) : "--"}</b></span><span>High <b>${q.high != null ? number(q.high, q.dp) : "--"}</b></span><span>Low <b>${q.low != null ? number(q.low, q.dp) : "--"}</b></span><span>52 Wk Hgh <b>${q.high52 != null ? number(q.high52, q.dp) : "--"}</b></span><span>52 Wk Lw <b>${q.low52 != null ? number(q.low52, q.dp) : "--"}</b></span></div><div><span>Volume <b>${compact(q.volume)}</b></span><span>Exchange <b>${q.exchange || "SMART"}</b></span><span>Kind <b>${q.kind || "Equity"}</b></span><span>Data <b class="${state.live ? "up" : "down"}">${q.src === "live" ? "LIVE" : "SIM"}</b></span><span>Updated <b>${q.t ? clock(q.t) : "--"}</b></span><span>Spread <b>${number(q.ask - q.bid, q.dp)}</b></span></div></div>
+        <div class="ib-quote-stats"><div><span>Opening Price <b>${q.open != null ? number(q.open, q.dp) : "--"}</b></span><span>Prior Close <b>${q.prevClose != null ? number(q.prevClose, q.dp) : "--"}</b></span><span>High <b>${q.high != null ? number(q.high, q.dp) : "--"}</b></span><span>Low <b>${q.low != null ? number(q.low, q.dp) : "--"}</b></span><span>52 Wk Hgh <b>${q.high52 != null ? number(q.high52, q.dp) : "--"}</b></span><span>52 Wk Lw <b>${q.low52 != null ? number(q.low52, q.dp) : "--"}</b></span></div><div><span>Volume <b>${compact(q.volume)}</b></span><span>Mkt Cap <b>${q.marketCap ? compact(q.marketCap) : "--"}</b></span><span>Exchange <b>${q.exchange || "SMART"}</b></span><span>Data <b class="${state.live ? "up" : "down"}">${q.src === "live" ? "LIVE" : "SIM"}</b></span><span>Updated <b>${q.t ? clock(q.t) : "--"}</b></span><span>Spread <b>${number(q.ask - q.bid, q.dp)}</b></span></div></div>
         ${detailed ? `<article class="ib-connections"><h3>${q.symbol} Connections ›</h3><p>Discover related companies, sectors, and tradable instruments.</p><button>Open the Connections Tab</button></article>` : ""}
         <div class="ib-rail-chart"><div>${RAIL_RANGES.map(([label]) => `<button data-rail-range="${label}" class="${state.railRange === label ? "active" : ""}">${label}</button>`).join("")}</div><canvas class="ib-line-chart" data-rail-symbol="${q.symbol}"></canvas></div>
       </aside>`;
@@ -724,8 +966,8 @@ export function createIBKRDesktop() {
       <p>Account <b>DU•••••74</b> &nbsp; Position <b>${pos ? number(pos.qty, 0) : "-"}</b></p>
       <p>Available Funds <b>${compact(Math.max(0, stats.cash))}</b></p>
       <label>Quantity <input data-entry-qty type="number" min="1" value="100"> Shares</label>
-      <div class="ib-order-types">${["Limit", "Market"].map((t) => `<button data-entry-type="${t}" class="${t === "Limit" ? "active" : ""}">${t}</button>`).join("")}</div>
-      <label>Limit Price <input data-entry-limit type="number" step="0.01" value="${(q.ask).toFixed(2)}"></label>
+      <div class="ib-order-types">${["Limit", "Market", "Stop"].map((t) => `<button data-entry-type="${t}" class="${t === "Limit" ? "active" : ""}">${t}</button>`).join("")}</div>
+      <label><span data-entry-price-label>Limit Price</span> <input data-entry-limit type="number" step="0.01" value="${(q.ask).toFixed(2)}"></label>
       <button class="ib-submit-order" data-entry-submit>Submit Order</button>
     </div>`;
   }
@@ -745,6 +987,10 @@ export function createIBKRDesktop() {
     root.querySelectorAll("[data-symbol]").forEach((row) => row.addEventListener("click", () => {
       state.selected = row.dataset.symbol;
       renderPage();
+    }));
+    root.querySelectorAll("[data-goto-symbol]").forEach((row) => row.addEventListener("click", () => {
+      state.quoteTab = "Charts";
+      selectSymbol(row.dataset.gotoSymbol);
     }));
     root.querySelectorAll("[data-order]").forEach((button) => button.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -768,8 +1014,47 @@ export function createIBKRDesktop() {
       toast("Order cancelled");
       renderPage();
     }));
+    root.querySelectorAll("[data-unwatch]").forEach((button) => button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleWatch(button.dataset.unwatch);
+    }));
+    root.querySelectorAll("[data-watch-toggle]").forEach((button) => button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleWatch(button.dataset.watchToggle);
+    }));
+    root.querySelectorAll("[data-close-pos]").forEach((button) => button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const symbol = button.dataset.closePos;
+      const pos = state.account.positions[symbol];
+      if (!pos) return;
+      showOrder(pos.qty > 0 ? "SELL" : "BUY", { symbol, qty: Math.abs(pos.qty) });
+    }));
+    root.querySelectorAll("[data-quote-tab]").forEach((button) => button.addEventListener("click", () => {
+      state.quoteTab = button.dataset.quoteTab;
+      renderPage();
+    }));
+    root.querySelectorAll("[data-mover-tab], [data-mover-pick]").forEach((el) => el.addEventListener("click", () => {
+      state.moversTab = el.dataset.moverTab ?? el.dataset.moverPick;
+      renderPage(true);
+    }));
+    root.querySelectorAll("[data-news-view]").forEach((button) => button.addEventListener("click", () => {
+      state.newsView = button.dataset.newsView;
+      renderPage();
+    }));
+    const newsSearch = root.querySelector("[data-news-search]");
+    if (newsSearch) {
+      attachSearch(newsSearch, root.querySelector("[data-news-search-results]"), (hit) => {
+        state.quoteTab = "News";
+        selectSymbol(hit.symbol, hit.name, hit.kind);
+      });
+    }
+    root.querySelector("[data-add-watch]")?.addEventListener("click", showAddSymbol);
     root.querySelector("[data-reset-account]")?.addEventListener("click", showResetAccount);
-    root.querySelector("[data-refresh]")?.addEventListener("click", () => refreshQuotes());
+    root.querySelector("[data-refresh]")?.addEventListener("click", async () => {
+      refreshQuotes();
+      await loadMovers(true);
+      renderPage(true);
+    });
     bindOrderEntry();
   }
 
@@ -783,12 +1068,18 @@ export function createIBKRDesktop() {
     entry.querySelectorAll("[data-entry-type]").forEach((button) => button.addEventListener("click", () => {
       entry.querySelectorAll("[data-entry-type]").forEach((b) => b.classList.toggle("active", b === button));
       entry.querySelector("[data-entry-limit]").disabled = button.dataset.entryType === "Market";
+      entry.querySelector("[data-entry-price-label]").textContent = button.dataset.entryType === "Stop" ? "Stop Price" : "Limit Price";
     }));
     entry.querySelector("[data-entry-search]").addEventListener("keydown", (event) => {
       if (event.key !== "Enter") return;
       const symbol = event.currentTarget.value.trim().toUpperCase();
       if (state.quotes.has(symbol)) {
         state.selected = symbol;
+        renderPage();
+      } else if (/^[A-Z0-9.^=-]{1,12}$/.test(symbol)) {
+        state.selected = symbol;
+        state.quotes.set(symbol, normalizeQuote({ symbol, last: 0, chg: 0, pct: 0, src: "pending" }, null));
+        refreshQuotes();
         renderPage();
       } else {
         toast(`No match for "${symbol}"`);
@@ -803,16 +1094,45 @@ export function createIBKRDesktop() {
       if (result.error) return toast(result.error);
       toast(result.order.status === "Filled"
         ? `${side} ${result.order.qty} ${state.selected} filled @ ${number(result.order.fillPrice)}`
-        : `${side} ${result.order.qty} ${state.selected} working @ ${number(result.order.limit)}`);
+        : `${side} ${result.order.qty} ${state.selected} working @ ${number(result.order.limit ?? result.order.stop)}`);
       renderPage();
       updateTopbar();
     });
   }
 
-  // Async fill-in after a page render: history-backed charts + sparklines.
+  // Async fill-in after a page render: history-backed charts + sparklines,
+  // plus on-demand movers / per-symbol news / fundamentals panels.
   async function hydratePage() {
     const seq = ++state.renderSeq;
     drawVisibleCharts();
+    if (state.page === "screeners") {
+      const before = state.movers;
+      loadMovers().then(() => {
+        if (seq === state.renderSeq && state.page === "screeners" && state.movers !== before) renderPage(true);
+      });
+    }
+    const symNewsHost = root.querySelector("[data-sym-news]");
+    if (symNewsHost) {
+      loadSymbolNews([state.selected]).then(({ items, src }) => {
+        const host = root.querySelector("[data-sym-news]");
+        if (seq === state.renderSeq && host) host.innerHTML = symbolNewsList(items, src);
+      });
+    }
+    const fundHost = root.querySelector("[data-fundamentals]");
+    if (fundHost) {
+      loadFundamentals(state.selected).then((entry) => {
+        const host = root.querySelector("[data-fundamentals]");
+        if (seq === state.renderSeq && host) host.innerHTML = fundamentalsPanel(entry.error ? null : entry.data);
+      });
+    }
+    const viewNewsHost = root.querySelector("[data-view-news]");
+    const viewSymbols = newsViewSymbols();
+    if (viewNewsHost && viewSymbols?.length) {
+      loadSymbolNews(viewSymbols).then(({ items, src }) => {
+        const host = root.querySelector("[data-view-news]");
+        if (seq === state.renderSeq && host) host.innerHTML = symbolNewsList(items, src);
+      });
+    }
     const candleCanvas = root.querySelector("[data-chart-symbol]");
     if (candleCanvas) {
       const rangeKey = CHART_RANGES.includes(state.chartRange) ? state.chartRange : "1D";
@@ -822,16 +1142,9 @@ export function createIBKRDesktop() {
         canvas._series = data.candles;
         canvas._range = rangeKey;
         drawCandles(canvas);
+        attachCrosshair(canvas);
       });
-      const lastCandle = data.candles[data.candles.length - 1];
-      const ohlc = root.querySelector("[data-ohlc]");
-      if (ohlc && lastCandle) {
-        const q = quote(state.selected);
-        ohlc.textContent = `O${number(lastCandle.o, q.dp)} H${number(lastCandle.h, q.dp)} L${number(lastCandle.l, q.dp)} C${number(lastCandle.c, q.dp)}`;
-        ohlc.className = tone(lastCandle.c - lastCandle.o);
-        const vol = root.querySelector("[data-chartvol]");
-        if (vol) vol.textContent = compact(lastCandle.v);
-      }
+      setOhlc(data.candles[data.candles.length - 1]);
     }
     const railCanvas = root.querySelector("[data-rail-symbol]");
     if (railCanvas) {
@@ -893,23 +1206,32 @@ export function createIBKRDesktop() {
     const min = Math.min(...values);
     const max = Math.max(...values);
     const span = Math.max(max - min, max * 0.0005);
-    const y = (v) => pad.t + (max - v) / span * (height - pad.t - pad.b);
+    // Volume histogram band between the price plot and the time axis.
+    const volHeight = Math.min(56, (height - pad.t - pad.b) * 0.2);
+    const priceBottom = height - pad.b - volHeight - 6;
+    const y = (v) => pad.t + (max - v) / span * (priceBottom - pad.t);
     ctx.strokeStyle = "#e3e5e8"; ctx.lineWidth = 1;
     for (let i = 0; i < 6; i += 1) {
-      const yy = pad.t + i * (height - pad.t - pad.b) / 5;
+      const yy = pad.t + i * (priceBottom - pad.t) / 5;
       ctx.beginPath(); ctx.moveTo(pad.l, yy); ctx.lineTo(width - pad.r, yy); ctx.stroke();
     }
     const step = plotWidth / candles.length;
+    const maxVol = Math.max(1, ...candles.map((c) => c.v || 0));
     candles.forEach((c, i) => {
       const x = pad.l + i * step + step / 2;
-      const color = c.c >= c.o ? "#0b9c55" : "#e21b2c";
+      const up = c.c >= c.o;
+      const color = up ? "#0b9c55" : "#e21b2c";
+      const barWidth = Math.max(3, step * .6);
+      ctx.fillStyle = up ? "rgba(11,156,85,.30)" : "rgba(226,27,44,.30)";
+      const vh = (c.v || 0) / maxVol * volHeight;
+      ctx.fillRect(x - barWidth / 2, height - pad.b - vh, barWidth, vh);
       ctx.strokeStyle = color; ctx.fillStyle = color;
       ctx.beginPath(); ctx.moveTo(x, y(c.h)); ctx.lineTo(x, y(c.l)); ctx.stroke();
       const top = Math.min(y(c.o), y(c.c));
-      ctx.fillRect(x - Math.max(1.5, step * .3), top, Math.max(3, step * .6), Math.max(1.5, Math.abs(y(c.o) - y(c.c))));
+      ctx.fillRect(x - Math.max(1.5, step * .3), top, barWidth, Math.max(1.5, Math.abs(y(c.o) - y(c.c))));
     });
     ctx.fillStyle = "#333"; ctx.font = "12px Arial";
-    [max, (max + min) / 2, min].forEach((v, i) => ctx.fillText(number(v, dp), width - pad.r + 6, pad.t + i * (height - pad.t - pad.b) / 2 + 4));
+    [max, (max + min) / 2, min].forEach((v, i) => ctx.fillText(number(v, dp), width - pad.r + 6, pad.t + i * (priceBottom - pad.t) / 2 + 4));
     // time axis: first / middle / last bar
     const intraday = ["1D", "5D"].includes(canvas._range ?? "1D");
     const fmt = (t) => intraday
@@ -918,6 +1240,56 @@ export function createIBKRDesktop() {
     ctx.fillStyle = "#7a7f86";
     [[0, pad.l], [Math.floor(candles.length / 2), pad.l + plotWidth / 2 - 18], [candles.length - 1, width - pad.r - 40]].forEach(([idx, x]) => {
       if (candles[idx]?.t) ctx.fillText(fmt(candles[idx].t), x, height - 12);
+    });
+    canvas._plot = { candles, pad, step, width, height, priceBottom, max, span, dp, intraday };
+  }
+
+  function setOhlc(candle) {
+    const ohlc = root.querySelector("[data-ohlc]");
+    if (!ohlc || !candle) return;
+    const q = quote(state.selected);
+    ohlc.textContent = `O${number(candle.o, q.dp)} H${number(candle.h, q.dp)} L${number(candle.l, q.dp)} C${number(candle.c, q.dp)}`;
+    ohlc.className = tone(candle.c - candle.o);
+    const vol = root.querySelector("[data-chartvol]");
+    if (vol) vol.textContent = compact(candle.v);
+  }
+
+  // Crosshair overlay: hover scrubs the OHLC readout, dashed guides track
+  // the cursor, and the price under the cursor is tagged on the right axis.
+  function attachCrosshair(canvas) {
+    if (canvas._xhair) return;
+    canvas._xhair = true;
+    canvas.addEventListener("mousemove", (event) => {
+      const plot = canvas._plot;
+      if (!plot) return;
+      const rect = canvas.getBoundingClientRect();
+      const mx = event.clientX - rect.left;
+      const my = event.clientY - rect.top;
+      drawCandles(canvas);
+      const index = Math.max(0, Math.min(plot.candles.length - 1, Math.floor((mx - plot.pad.l) / plot.step)));
+      const candle = plot.candles[index];
+      if (!candle) return;
+      const ctx = canvas.getContext("2d");
+      const x = plot.pad.l + index * plot.step + plot.step / 2;
+      ctx.save();
+      ctx.strokeStyle = "#5b6068"; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+      ctx.beginPath(); ctx.moveTo(x, plot.pad.t); ctx.lineTo(x, plot.height - plot.pad.b); ctx.stroke();
+      if (my >= plot.pad.t && my <= plot.priceBottom) {
+        ctx.beginPath(); ctx.moveTo(plot.pad.l, my); ctx.lineTo(plot.width - plot.pad.r, my); ctx.stroke();
+        ctx.setLineDash([]);
+        const price = plot.max - (my - plot.pad.t) / (plot.priceBottom - plot.pad.t) * plot.span;
+        ctx.fillStyle = "#1c1f24";
+        ctx.fillRect(plot.width - plot.pad.r + 2, my - 9, plot.pad.r - 4, 18);
+        ctx.fillStyle = "#fff"; ctx.font = "11px Arial";
+        ctx.fillText(number(price, plot.dp), plot.width - plot.pad.r + 6, my + 4);
+      }
+      ctx.restore();
+      setOhlc(candle);
+    });
+    canvas.addEventListener("mouseleave", () => {
+      drawCandles(canvas);
+      const last = canvas._plot?.candles.at(-1);
+      if (last) setOhlc(last);
     });
   }
 
@@ -957,13 +1329,13 @@ export function createIBKRDesktop() {
 
   /* ================= modals & toasts ================= */
 
-  function showOrder(side) {
-    const q = quote(state.selected);
+  function showOrder(side, opts = {}) {
+    const q = quote(opts.symbol ?? state.selected);
     const layer = showModal(`
       <h2 class="${side === "BUY" ? "blue" : "down"}">${side === "BUY" ? "Buy" : "Sell"} ${q.symbol}</h2><p>${escapeHtml(q.name)}</p>
-      <label>Quantity<input data-m-qty value="100" type="number" min="1"></label>
-      <label>Order Type<select data-m-type><option>Limit</option><option>Market</option></select></label>
-      <label>Limit Price<input data-m-limit type="number" step="0.01" value="${(side === "BUY" ? q.ask : q.bid).toFixed(2)}"></label>
+      <label>Quantity<input data-m-qty value="${Math.max(1, Math.floor(opts.qty ?? 100))}" type="number" min="1"></label>
+      <label>Order Type<select data-m-type><option>Limit</option><option>Market</option><option>Stop</option></select></label>
+      <label><span data-m-price-label>Limit Price</span><input data-m-limit type="number" step="0.01" value="${(side === "BUY" ? q.ask : q.bid).toFixed(2)}"></label>
       <p class="ib-est">Est. ${side === "BUY" ? "cost" : "proceeds"} <b data-m-est>--</b></p>
       <div><button data-cancel>Cancel</button><button class="${side === "BUY" ? "buy" : "sell"}" data-m-submit>Submit Order</button></div>`);
     const qtyInput = layer.querySelector("[data-m-qty]");
@@ -973,6 +1345,7 @@ export function createIBKRDesktop() {
     const updateEst = () => {
       const type = typeInput.value;
       limitInput.disabled = type === "Market";
+      layer.querySelector("[data-m-price-label]").textContent = type === "Stop" ? "Stop Price" : "Limit Price";
       const px = type === "Market" ? (side === "BUY" ? q.ask : q.bid) : Number(limitInput.value);
       const qty = Number(qtyInput.value);
       est.textContent = Number.isFinite(px) && qty > 0 ? number(px * qty, 0) + " USD" : "--";
@@ -986,7 +1359,7 @@ export function createIBKRDesktop() {
         return;
       }
       const o = result.order;
-      layer.innerHTML = `<div class="ib-modal"><h2>${o.status === "Filled" ? "Order Filled" : "Order Working"}</h2><p>${o.side} ${number(o.qty, 0)} ${o.symbol} ${o.type}${o.limit != null ? ` @ ${number(o.limit)}` : ""}${o.fillPrice != null ? ` — filled @ <b>${number(o.fillPrice)}</b>` : " — waiting for marketable price"}.</p><p class="ib-fineprint">Simulated execution. No brokerage order was transmitted.</p><div><button data-cancel>Done</button></div></div>`;
+      layer.innerHTML = `<div class="ib-modal"><h2>${o.status === "Filled" ? "Order Filled" : "Order Working"}</h2><p>${o.side} ${number(o.qty, 0)} ${o.symbol} ${o.type}${o.limit != null ? ` @ ${number(o.limit)}` : o.stop != null ? ` stop ${number(o.stop)}` : ""}${o.fillPrice != null ? ` — filled @ <b>${number(o.fillPrice)}</b>` : o.stop != null ? " — waiting for stop trigger" : " — waiting for marketable price"}.</p><p class="ib-fineprint">Simulated execution. No brokerage order was transmitted.</p><div><button data-cancel>Done</button></div></div>`;
       layer.querySelector("[data-cancel]").addEventListener("click", () => {
         layer.hidden = true; layer.innerHTML = "";
         renderPage();
@@ -1018,6 +1391,34 @@ export function createIBKRDesktop() {
       renderPage();
       updateTopbar();
     });
+  }
+
+  function showAddSymbol() {
+    const layer = showModal(`
+      <h2>Add to Watchlist</h2>
+      <label class="ib-add-search"><input data-add-input placeholder="Search symbol or company" autocomplete="off"></label>
+      <div class="ib-search-results ib-modal-results" hidden></div>
+      <div><button data-cancel>Close</button></div>`);
+    const input = layer.querySelector("[data-add-input]");
+    attachSearch(input, layer.querySelector(".ib-search-results"), (hit) => {
+      if (state.watchlist.includes(hit.symbol)) {
+        toast(`${hit.symbol} is already on the watchlist`);
+      } else if (state.watchlist.length >= WATCH_MAX) {
+        toast(`Watchlist is full (${WATCH_MAX} symbols).`);
+      } else {
+        state.watchlist.push(hit.symbol);
+        saveWatchlist();
+        if (!state.quotes.has(hit.symbol)) {
+          state.quotes.set(hit.symbol, normalizeQuote({ symbol: hit.symbol, name: hit.name, kind: hit.kind, last: 0, chg: 0, pct: 0, src: "pending" }, null));
+        }
+        refreshQuotes();
+        toast(`${hit.symbol} added to watchlist`);
+      }
+      layer.hidden = true;
+      layer.innerHTML = "";
+      renderPage();
+    });
+    input.focus();
   }
 
   function showNotice(message) {
@@ -1077,6 +1478,7 @@ function normalizeQuote(row, prior) {
     low52: row.low52 ?? prior?.low52 ?? null,
     volume: row.volume ?? prior?.volume ?? null,
     exchange: row.exchange ?? prior?.exchange ?? null,
+    marketCap: row.marketCap ?? prior?.marketCap ?? null,
     spark: row.spark ?? prior?.spark ?? null,
     src: row.src ?? prior?.src ?? "seed",
     t: row.t ?? Date.now(),

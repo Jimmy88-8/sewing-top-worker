@@ -4,8 +4,11 @@
     {
       "name": "sewingos",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["scripts/dev-server.mjs"],
-      "port": 8787
+      "runtimeArgs": [
+        "scripts/dev-server.mjs"
+      ],
+      "port": 8787,
+      "autoPort": true
     }
   ]
 }

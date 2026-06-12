@@ -12,9 +12,12 @@
  * falls back to a deterministic simulation and is tagged `src: "sim"`.
  *
  * Endpoints:
- *   GET /api/quotes                      -> quotes for all symbols
- *   GET /api/history?symbol=AAPL&range=1D|5D|1M|6M|1Y
- *   GET /api/news
+ *   GET /api/quotes[?extra=TSM,BABA]     -> quotes for all registry symbols (+ ad-hoc Yahoo tickers)
+ *   GET /api/history?symbol=AAPL&range=1D|5D|1M|6M|1Y   (any Yahoo ticker accepted)
+ *   GET /api/search?q=apple              -> Yahoo symbol lookup (registry fallback offline)
+ *   GET /api/news[?symbols=AAPL,TSLA]    -> market-wide feed, or per-symbol Yahoo RSS
+ *   GET /api/movers                      -> US market gainers / losers / most active / trending
+ *   GET /api/fundamentals?symbol=AAPL    -> company profile + key statistics (Yahoo quoteSummary)
  *   GET /api/weather?lat=31.2&lon=121.5
  *   GET /api/geocode?q=Shanghai
  *   GET /api/status
@@ -97,9 +100,16 @@ const UA = {
   accept: "application/json, text/xml, */*",
 };
 
+// Yahoo rate-limits per user-agent + IP; a minimal UA usually still passes
+// when the browser-like one is throttled, so 429s get one retry with it.
+const UA_MIN = { "user-agent": "Mozilla/5.0", accept: UA.accept };
+
 async function upstream(provider, url, asText = false) {
   try {
-    const res = await fetch(url, { headers: UA, signal: AbortSignal.timeout(6_000) });
+    let res = await fetch(url, { headers: UA, signal: AbortSignal.timeout(6_000) });
+    if (res.status === 429) {
+      res = await fetch(url, { headers: UA_MIN, signal: AbortSignal.timeout(6_000) });
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const body = asText ? await res.text() : await res.json();
     health[provider] = { ok: true, t: Date.now() };
@@ -231,25 +241,27 @@ async function yahooGet(pathAndQuery) {
   }
 }
 
-async function yahooSpark(ids) {
-  const refs = ids.map((id) => SYMBOLS[id].ref);
+// specs: [{ id, ref }] — registry symbols pass their configured ref,
+// ad-hoc tickers use the ticker itself for both.
+async function yahooSpark(specs) {
   const data = await yahooGet(
-    "/v7/finance/spark?symbols=" + encodeURIComponent(refs.join(",")) + "&range=1d&interval=5m",
+    "/v7/finance/spark?symbols=" + encodeURIComponent(specs.map((s) => s.ref).join(",")) + "&range=1d&interval=5m",
   );
+  const byRef = Object.fromEntries(specs.map((s) => [s.ref, s.id]));
   const out = new Map();
   for (const item of data?.spark?.result ?? []) {
-    const id = REF_TO_ID[item.symbol];
+    const id = byRef[item.symbol];
     const r = item.response?.[0];
     const meta = r?.meta;
     if (!id || !meta?.regularMarketPrice) continue;
-    const dp = dpFor(id);
+    const last = meta.regularMarketPrice;
+    const dp = last > 0 && last < 10 ? 4 : 2;
     const closes = (r.indicators?.quote?.[0]?.close ?? []).filter((x) => x != null);
     const prevClose = meta.previousClose ?? meta.chartPreviousClose;
-    const last = meta.regularMarketPrice;
     out.set(id, {
       symbol: id,
-      name: SYMBOLS[id].name,
-      kind: SYMBOLS[id].kind,
+      name: SYMBOLS[id]?.name ?? null,
+      kind: SYMBOLS[id]?.kind ?? null,
       last: round(last, dp),
       open: closes.length ? round(closes[0], dp) : null,
       high: round(meta.regularMarketDayHigh, dp),
@@ -272,7 +284,7 @@ async function yahooSpark(ids) {
 async function yahooChart(id, rangeKey) {
   const [range, interval] = RANGES[rangeKey];
   const data = await yahooGet(
-    `/v8/finance/chart/${encodeURIComponent(SYMBOLS[id].ref)}?range=${range}&interval=${interval}`,
+    `/v8/finance/chart/${encodeURIComponent(SYMBOLS[id]?.ref ?? id)}?range=${range}&interval=${interval}`,
   );
   const r = data?.chart?.result?.[0];
   if (!r?.timestamp) throw new Error("yahoo: empty chart");
@@ -293,7 +305,7 @@ async function yahooChart(id, rangeKey) {
   return {
     candles,
     meta: {
-      name: m.longName ?? SYMBOLS[id].name,
+      name: m.longName ?? SYMBOLS[id]?.name ?? id,
       currency: m.currency,
       exchange: m.fullExchangeName ?? m.exchangeName,
       high52: m.fiftyTwoWeekHigh ?? null,
@@ -302,6 +314,217 @@ async function yahooChart(id, rangeKey) {
       marketState: m.marketState ?? null,
     },
   };
+}
+
+/* ---------- Yahoo crumb (cookie-authenticated endpoints) ---------- */
+
+// v7/quote and v10/quoteSummary require a session cookie + crumb token.
+// Both are free and keyless; the pair is cached and refreshed on 401/403.
+let yAuth = null; // { cookie, crumb, headers, exp }
+
+// The crumb is tied to the session cookie and user-agent, so the whole flow
+// runs under one header set; on throttling it retries under the minimal UA.
+async function yahooAuthWith(headers) {
+  const res = await fetch("https://fc.yahoo.com/", {
+    headers, redirect: "manual", signal: AbortSignal.timeout(6_000),
+  });
+  const cookie = (res.headers.get("set-cookie") || "").split(";")[0];
+  if (!cookie) throw new Error("yahoo: no session cookie");
+  const crumbRes = await fetch("https://query2.finance.yahoo.com/v1/test/getcrumb", {
+    headers: { ...headers, cookie }, signal: AbortSignal.timeout(6_000),
+  });
+  if (!crumbRes.ok) throw new Error(`yahoo crumb: HTTP ${crumbRes.status}`);
+  const crumb = (await crumbRes.text()).trim();
+  if (!crumb || crumb.includes("<")) throw new Error("yahoo: bad crumb");
+  return { cookie, crumb, headers, exp: Date.now() + 1_800_000 };
+}
+
+async function yahooAuth(force = false) {
+  if (!force && yAuth && Date.now() < yAuth.exp) return yAuth;
+  try {
+    yAuth = await yahooAuthWith(UA);
+  } catch {
+    yAuth = await yahooAuthWith(UA_MIN);
+  }
+  return yAuth;
+}
+
+async function yahooCrumbGet(pathAndQuery) {
+  let auth = await yahooAuth();
+  for (let attempt = 0; ; attempt++) {
+    const url =
+      `https://query2.finance.yahoo.com${pathAndQuery}` +
+      `${pathAndQuery.includes("?") ? "&" : "?"}crumb=${encodeURIComponent(auth.crumb)}`;
+    const res = await fetch(url, {
+      headers: { ...auth.headers, cookie: auth.cookie },
+      signal: AbortSignal.timeout(6_000),
+    });
+    if ((res.status === 401 || res.status === 403 || res.status === 429) && attempt === 0) {
+      auth = await yahooAuth(true);
+      continue;
+    }
+    if (!res.ok) {
+      health.yahoo = { ok: false, t: Date.now(), error: `HTTP ${res.status}` };
+      throw new Error(`yahoo: HTTP ${res.status}`);
+    }
+    health.yahoo = { ok: true, t: Date.now() };
+    return res.json();
+  }
+}
+
+const QUOTE_KINDS = {
+  EQUITY: "Equity", ETF: "ETF", INDEX: "Index", CRYPTOCURRENCY: "Crypto",
+  CURRENCY: "FX", FUTURE: "Cmdty", MUTUALFUND: "Fund",
+};
+
+function mapV7(r) {
+  const last = r.regularMarketPrice;
+  if (last == null) return null;
+  const dp = last > 0 && last < 10 ? 4 : 2;
+  return {
+    symbol: String(r.symbol).toUpperCase(),
+    name: String(r.longName ?? r.shortName ?? r.symbol).toUpperCase(),
+    kind: QUOTE_KINDS[r.quoteType] ?? "Equity",
+    last: round(last, dp),
+    open: round(r.regularMarketOpen, dp),
+    high: round(r.regularMarketDayHigh, dp),
+    low: round(r.regularMarketDayLow, dp),
+    prevClose: round(r.regularMarketPreviousClose, dp),
+    chg: round(r.regularMarketChange, dp),
+    chgPct: round(r.regularMarketChangePercent, 2),
+    volume: r.regularMarketVolume ?? null,
+    high52: round(r.fiftyTwoWeekHigh, dp),
+    low52: round(r.fiftyTwoWeekLow, dp),
+    exchange: r.fullExchangeName ?? r.exchange ?? null,
+    marketCap: r.marketCap ?? null,
+    pe: round(r.trailingPE, 2),
+    eps: round(r.epsTrailingTwelveMonths, 2),
+    src: "live",
+    t: (r.regularMarketTime ?? 0) * 1000 || Date.now(),
+  };
+}
+
+async function yahooQuotes(refs) {
+  const data = await yahooCrumbGet(`/v7/finance/quote?symbols=${encodeURIComponent(refs.join(","))}`);
+  return (data?.quoteResponse?.result ?? []).map(mapV7).filter(Boolean);
+}
+
+/* ---------- US market movers ---------- */
+
+// S&P 100-ish large-cap universe plus Yahoo's trending list; one batched
+// v7/quote call covers it, with spark batches as the keyless fallback.
+const US_UNIVERSE = (
+  "AAPL MSFT NVDA AMZN GOOGL GOOG META TSLA AVGO BRK-B LLY JPM UNH XOM V MA COST HD PG JNJ " +
+  "WMT NFLX ABBV CRM BAC ORCL CVX WFC KO MRK CSCO ACN ADBE AMD PEP LIN TMO MCD ABT PM " +
+  "IBM GE ISRG CAT QCOM TXN INTU VZ DIS BKNG SPGI GS NOW AXP T RTX PLTR MS HON AMGN " +
+  "UBER NEE PFE UNP LOW BLK TJX COP SYK SCHW ETN AMAT PANW BSX DE BMY ADP MDT VRTX GILD " +
+  "MMC SBUX C ADI LMT CB MU INTC PLD SO MO ELV ICE DUK REGN CL TGT FDX PGR EMR NKE " +
+  "CMCSA KKR DELL ABNB CRWD MAR COIN F GM"
+).split(" ");
+
+async function trendingSymbols() {
+  const data = await yahooGet("/v1/finance/trending/US?count=16");
+  return (data?.finance?.result?.[0]?.quotes ?? [])
+    .map((q) => String(q.symbol).toUpperCase())
+    .filter((s) => TICKER_RE.test(s));
+}
+
+async function movers(now) {
+  return cached("movers", 90_000, async () => {
+    let trend = [];
+    try { trend = await trendingSymbols(); } catch { /* trending is optional */ }
+    let rows = [];
+    try {
+      rows = await yahooQuotes([...new Set([...US_UNIVERSE, ...trend])]);
+    } catch {
+      // crumb path down: spark batches still give price/change/volume
+      const batches = [];
+      for (let i = 0; i < US_UNIVERSE.length; i += 40) batches.push(US_UNIVERSE.slice(i, i + 40));
+      const settled = await Promise.allSettled(
+        batches.map((b) => yahooSpark(b.map((s) => ({ id: s, ref: s })))),
+      );
+      rows = settled.flatMap((r) => (r.status === "fulfilled" ? [...r.value.values()] : []));
+    }
+    if (!rows.length) {
+      rows = (await allQuotes(now)).filter((q) => ["Equity", "ETF"].includes(q.kind));
+    }
+    const stocks = rows.filter((r) => r.last > 0 && r.chgPct != null && (r.kind == null || r.kind === "Equity"));
+    const top = (arr) => arr.slice(0, 14);
+    const byId = new Map(rows.map((r) => [r.symbol, r]));
+    const actives = top([...stocks].sort((a, b) => (b.volume ?? 0) * b.last - (a.volume ?? 0) * a.last));
+    const trending = top(trend.map((s) => byId.get(s)).filter(Boolean));
+    return {
+      src: rows.some((r) => r.src === "live") ? "live" : "sim",
+      t: now,
+      gainers: top([...stocks].sort((a, b) => b.chgPct - a.chgPct)),
+      losers: top([...stocks].sort((a, b) => a.chgPct - b.chgPct)),
+      actives,
+      trending: trending.length ? trending : actives,
+    };
+  });
+}
+
+/* ---------- fundamentals ---------- */
+
+const FUND_MODULES = "assetProfile,summaryDetail,defaultKeyStatistics,financialData,price";
+
+async function fundamentals(id, ref) {
+  return cached(`fund|${id}`, 1_800_000, async () => {
+    try {
+      const data = await yahooCrumbGet(
+        `/v10/finance/quoteSummary/${encodeURIComponent(ref)}?modules=${FUND_MODULES}`,
+      );
+      const r = data?.quoteSummary?.result?.[0];
+      if (!r) throw new Error("yahoo: empty summary");
+      const num = (x) => (typeof x === "object" ? x?.raw : x) ?? null;
+      const p = r.price ?? {}, sd = r.summaryDetail ?? {}, ks = r.defaultKeyStatistics ?? {};
+      const fd = r.financialData ?? {}, ap = r.assetProfile ?? {};
+      return {
+        src: "live",
+        symbol: id,
+        name: p.longName ?? p.shortName ?? id,
+        currency: p.currency ?? "USD",
+        sector: ap.sector ?? null,
+        industry: ap.industry ?? null,
+        employees: ap.fullTimeEmployees ?? null,
+        website: ap.website ?? null,
+        summary: ap.longBusinessSummary ?? null,
+        marketCap: num(p.marketCap) ?? num(sd.marketCap),
+        trailingPE: num(sd.trailingPE),
+        forwardPE: num(ks.forwardPE),
+        eps: num(ks.trailingEps),
+        beta: num(sd.beta),
+        dividendYield: num(sd.dividendYield),
+        payoutRatio: num(sd.payoutRatio),
+        profitMargin: num(fd.profitMargins),
+        grossMargin: num(fd.grossMargins),
+        operatingMargin: num(fd.operatingMargins),
+        revenue: num(fd.totalRevenue),
+        revenueGrowth: num(fd.revenueGrowth),
+        freeCashflow: num(fd.freeCashflow),
+        totalCash: num(fd.totalCash),
+        totalDebt: num(fd.totalDebt),
+        returnOnEquity: num(fd.returnOnEquity),
+        targetMeanPrice: num(fd.targetMeanPrice),
+        recommendation: fd.recommendationKey ?? null,
+        analystCount: num(fd.numberOfAnalystOpinions),
+        sharesOutstanding: num(ks.sharesOutstanding),
+        priceToBook: num(ks.priceToBook),
+        avgVolume: num(sd.averageVolume),
+        high52: num(sd.fiftyTwoWeekHigh),
+        low52: num(sd.fiftyTwoWeekLow),
+      };
+    } catch (e) {
+      // degrade to the leaner batch-quote fields
+      const [row] = await yahooQuotes([ref]).catch(() => []);
+      if (!row) throw e;
+      return {
+        src: "partial", symbol: id, name: row.name, currency: "USD",
+        marketCap: row.marketCap, trailingPE: row.pe, eps: row.eps,
+        high52: row.high52, low52: row.low52, avgVolume: row.volume,
+      };
+    }
+  });
 }
 
 /* ================= Binance ================= */
@@ -384,7 +607,10 @@ async function allQuotes(now) {
     const yahooIds = ids.filter((id) => SYMBOLS[id].provider === "yahoo");
     const binanceIds = ids.filter((id) => SYMBOLS[id].provider === "binance");
 
-    const [y, b] = await Promise.allSettled([yahooSpark(yahooIds), binanceQuotes(binanceIds)]);
+    const [y, b] = await Promise.allSettled([
+      yahooSpark(yahooIds.map((id) => ({ id, ref: SYMBOLS[id].ref }))),
+      binanceQuotes(binanceIds),
+    ]);
     const live = new Map([
       ...(y.status === "fulfilled" ? y.value : new Map()),
       ...(b.status === "fulfilled" ? b.value : new Map()),
@@ -406,21 +632,85 @@ async function allQuotes(now) {
 
 async function historyFor(id, rangeKey, now) {
   const ttl = RANGES[rangeKey][4];
+  const spec = SYMBOLS[id];
   return cached(`hist|${id}|${rangeKey}`, ttl, async () => {
     try {
-      const fetcher = SYMBOLS[id].provider === "binance" ? binanceKlines : yahooChart;
+      const fetcher = spec?.provider === "binance" ? binanceKlines : yahooChart;
       const { candles, meta } = await fetcher(id, rangeKey);
       return { src: "live", candles, meta };
-    } catch {
+    } catch (e) {
+      if (!spec) throw e; // ad-hoc ticker: the client falls back to its own simulation
       const bucketMs = { "1D": 300_000, "5D": 900_000, "1M": 7_200_000, "6M": 86_400_000, "1Y": 86_400_000 }[rangeKey];
       const n = { "1D": 288, "5D": 240, "1M": 372, "6M": 183, "1Y": 365 }[rangeKey];
       return {
         src: "sim",
         candles: simCandles(id, bucketMs, n, now),
-        meta: { name: SYMBOLS[id].name, currency: "USD", exchange: "SIM", marketState: "SIM" },
+        meta: { name: spec.name, currency: "USD", exchange: "SIM", marketState: "SIM" },
       };
     }
   });
+}
+
+/* ---------- ad-hoc symbols & search ---------- */
+
+const TICKER_RE = /^[A-Z0-9.^=-]{1,12}$/;
+
+function parseExtra(param) {
+  return [...new Set(
+    (param || "")
+      .toUpperCase()
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => TICKER_RE.test(s) && !SYMBOLS[s]),
+  )].slice(0, 12);
+}
+
+function parseSymbols(param, max = 8) {
+  return [...new Set(
+    (param || "")
+      .toUpperCase()
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => TICKER_RE.test(s)),
+  )].slice(0, max);
+}
+
+async function extraQuotes(ids) {
+  if (!ids.length) return [];
+  const key = "xq|" + ids.join(",");
+  return cached(key, 20_000, async () => {
+    const out = await yahooSpark(ids.map((id) => ({ id, ref: id })));
+    return [...out.values()];
+  }).catch(() => []); // extras are best effort; the client keeps prior values
+}
+
+const SEARCH_KINDS = {
+  EQUITY: "Equity", ETF: "ETF", INDEX: "Index", CRYPTOCURRENCY: "Crypto",
+  CURRENCY: "FX", FUTURE: "Cmdty", MUTUALFUND: "Fund",
+};
+
+async function searchSymbols(q) {
+  return cached(`srch|${q.toLowerCase()}`, 3_600_000, async () => {
+    const data = await yahooGet(
+      `/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=8&newsCount=0&listsCount=0`,
+    );
+    return (data?.quotes ?? [])
+      .filter((r) => r.symbol && SEARCH_KINDS[r.quoteType])
+      .map((r) => ({
+        symbol: String(r.symbol).toUpperCase(),
+        name: String(r.longname ?? r.shortname ?? r.symbol).toUpperCase(),
+        kind: SEARCH_KINDS[r.quoteType],
+        exchange: r.exchDisp ?? null,
+      }));
+  });
+}
+
+function localSearch(q) {
+  const needle = q.toUpperCase();
+  return Object.entries(SYMBOLS)
+    .filter(([id, s]) => id.includes(needle) || s.name.toUpperCase().includes(needle))
+    .slice(0, 8)
+    .map(([id, s]) => ({ symbol: id, name: s.name, kind: s.kind, exchange: null }));
 }
 
 /* ---------- news ---------- */
@@ -462,6 +752,54 @@ function parseRSS(xml, source) {
   return items;
 }
 
+// Per-symbol headlines: Yahoo's per-ticker RSS feed, with the search
+// endpoint's news block as a keyless fallback.
+async function symbolNews(id) {
+  const ref = SYMBOLS[id]?.provider === "yahoo" ? SYMBOLS[id].ref : id;
+  return cached(`snews|${id}`, 300_000, async () => {
+    try {
+      const xml = await upstream(
+        "news",
+        `https://feeds.finance.yahoo.com/rss/2.0/headline?s=${encodeURIComponent(ref)}&region=US&lang=en-US`,
+        true,
+      );
+      const items = parseRSS(xml, "YAHOO FIN").map((n) => ({ ...n, symbol: id }));
+      if (!items.length) throw new Error("empty feed");
+      return items;
+    } catch {
+      const data = await yahooGet(
+        `/v1/finance/search?q=${encodeURIComponent(ref)}&quotesCount=0&newsCount=10&listsCount=0`,
+      );
+      const items = (data?.news ?? [])
+        .map((n) => ({
+          t: (n.providerPublishTime ?? 0) * 1000 || Date.now(),
+          source: n.publisher ?? "YAHOO",
+          headline: n.title,
+          link: n.link ?? null,
+          symbol: id,
+        }))
+        .filter((n) => n.headline);
+      if (!items.length) throw new Error("no news");
+      return items;
+    }
+  });
+}
+
+async function newsForSymbols(ids, now) {
+  const settled = await Promise.allSettled(ids.map(symbolNews));
+  const items = settled.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+  if (!items.length) return { src: "sim", items: simNews(now) };
+  items.sort((a, b) => b.t - a.t);
+  const seen = new Set();
+  const dedup = items.filter((n) => {
+    const k = n.headline.toLowerCase().slice(0, 60);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  return { src: "live", items: dedup.slice(0, 30) };
+}
+
 async function allNews(now) {
   return cached("news", 240_000, async () => {
     const results = await Promise.allSettled(
@@ -489,8 +827,11 @@ async function weather(lat, lon) {
   return cached(key, 600_000, async () => {
     const url =
       `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
-      `&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m` +
-      `&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=auto&forecast_days=6`;
+      `&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,precipitation,` +
+      `wind_speed_10m,wind_direction_10m,wind_gusts_10m,pressure_msl,visibility` +
+      `&hourly=temperature_2m,precipitation_probability,weather_code` +
+      `&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max,` +
+      `precipitation_sum,sunrise,sunset,uv_index_max&timezone=auto&forecast_days=10`;
     return upstream("weather", url);
   });
 }
@@ -523,20 +864,48 @@ export default {
     if (path.startsWith("/api/")) {
       try {
         switch (path) {
-          case "/api/quotes":
-            return ok({ t: now, quotes: await allQuotes(now) });
+          case "/api/quotes": {
+            const [base, dyn] = await Promise.all([
+              allQuotes(now),
+              extraQuotes(parseExtra(url.searchParams.get("extra"))),
+            ]);
+            return ok({ t: now, quotes: [...base, ...dyn] });
+          }
 
           case "/api/history": {
             const id = (url.searchParams.get("symbol") || "").toUpperCase();
-            if (!SYMBOLS[id]) return err(404, `unknown symbol: ${id || "(none)"}`);
+            if (!SYMBOLS[id] && !TICKER_RE.test(id)) return err(404, `unknown symbol: ${id || "(none)"}`);
             const rangeKey = (url.searchParams.get("range") || "1D").toUpperCase();
             if (!RANGES[rangeKey]) return err(400, `bad range: ${rangeKey}`);
             const h = await historyFor(id, rangeKey, now);
             return ok({ symbol: id, range: rangeKey, t: now, ...h });
           }
 
-          case "/api/news":
+          case "/api/search": {
+            const q = (url.searchParams.get("q") || "").trim().slice(0, 40);
+            if (!q) return err(400, "q required");
+            try {
+              return ok({ t: now, src: "live", results: await searchSymbols(q) });
+            } catch {
+              return ok({ t: now, src: "local", results: localSearch(q) });
+            }
+          }
+
+          case "/api/news": {
+            const ids = parseSymbols(url.searchParams.get("symbols"));
+            if (ids.length) return ok({ t: now, ...(await newsForSymbols(ids, now)) });
             return ok({ t: now, ...(await allNews(now)) });
+          }
+
+          case "/api/movers":
+            return ok(await movers(now));
+
+          case "/api/fundamentals": {
+            const id = (url.searchParams.get("symbol") || "").toUpperCase();
+            if (!TICKER_RE.test(id)) return err(400, "symbol required");
+            const ref = SYMBOLS[id]?.provider === "yahoo" ? SYMBOLS[id].ref : id;
+            return ok({ t: now, ...(await fundamentals(id, ref)) });
+          }
 
           case "/api/weather": {
             const lat = parseFloat(url.searchParams.get("lat"));

@@ -100,7 +100,11 @@ OS.registerApp({
   id: "calendar",
   name: "Calendar",
   icon: ICONS.calendar,
-  open() { return { title: "Calendar", width: 420, height: 440, x: 480, y: 110, minWidth: 340, minHeight: 380 }; },
+  open() {
+    const width = Math.min(1420, window.innerWidth - 52);
+    const height = Math.min(860, window.innerHeight - 104);
+    return { title: "Calendar", width, height, x: 26, y: 16, minWidth: 760, minHeight: 540 };
+  },
   onOpen(win) { win.body.appendChild(createCalendar()); },
 });
 
@@ -110,7 +114,11 @@ OS.registerApp({
   id: "weather",
   name: "Weather",
   icon: ICONS.weather,
-  open() { return { title: "Weather", width: 420, height: 480, x: 560, y: 80, minWidth: 320, minHeight: 380 }; },
+  open() {
+    const width = Math.min(1420, window.innerWidth - 52);
+    const height = Math.min(860, window.innerHeight - 104);
+    return { title: "Weather", width, height, x: 26, y: 16, minWidth: 760, minHeight: 540 };
+  },
   onOpen(win) { win.body.appendChild(createWeather()); },
 });
 
