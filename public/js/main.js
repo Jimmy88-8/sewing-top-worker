@@ -88,7 +88,7 @@ OS.registerApp({
   id: "calculator",
   name: "Calculator",
   icon: ICONS.calculator,
-  open() { return { title: "Calculator", width: 248, height: 380, x: 640, y: 120, minWidth: 232, minHeight: 340 }; },
+  open() { return { title: "Calculator", width: 292, height: 500, x: 640, y: 80, minWidth: 260, minHeight: 420 }; },
   onOpen(win) {
     win.body.appendChild(createCalculator());
   },

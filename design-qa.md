@@ -27,6 +27,55 @@ final result: passed
 
 ---
 
+# Calculator Design QA
+
+- Source visual truth:
+  - `/Users/jeremmy/Desktop/Screenshot 2026-06-12 at 18.12.43.png`
+  - `/Users/jeremmy/Desktop/Screenshot 2026-06-12 at 18.13.01.png`
+  - `/Users/jeremmy/Desktop/Screenshot 2026-06-12 at 18.13.10.png`
+  - `/Users/jeremmy/Desktop/Screenshot 2026-06-12 at 18.13.45.png`
+- Implementation screenshots:
+  - `/Users/jeremmy/Documents/Jeremy_Developing/sewing-top-worker/artifacts/qa-calculator-basic.png`
+  - `/Users/jeremmy/Documents/Jeremy_Developing/sewing-top-worker/artifacts/qa-calculator-scientific.png`
+  - `/Users/jeremmy/Documents/Jeremy_Developing/sewing-top-worker/artifacts/qa-calculator-programmer.png`
+  - `/Users/jeremmy/Documents/Jeremy_Developing/sewing-top-worker/artifacts/qa-calculator-history.png`
+- Viewport: 1280 x 720 browser; mode windows are centered and constrained above the Dock.
+- States: Basic cleared; Scientific cleared with `2nd` functions; Programmer hexadecimal with binary visible; Basic with history visible.
+- Full-view comparison evidence:
+  - `/Users/jeremmy/Documents/Jeremy_Developing/sewing-top-worker/artifacts/qa-calculator-comparison.png`
+  - `/Users/jeremmy/Documents/Jeremy_Developing/sewing-top-worker/artifacts/qa-calculator-scientific-comparison.png`
+  - `/Users/jeremmy/Documents/Jeremy_Developing/sewing-top-worker/artifacts/qa-calculator-programmer-comparison.png`
+  - `/Users/jeremmy/Documents/Jeremy_Developing/sewing-top-worker/artifacts/qa-calculator-history-comparison.png`
+- Focused comparison evidence: not needed because every button label, display, bit row, and history entry remains readable in the normalized full-window comparisons.
+
+**Findings**
+
+- No actionable P0, P1, or P2 mismatches remain.
+- Typography uses the existing system font stack, light display weight, and tabular numerals. Long values step down to compact sizes instead of clipping.
+- Spacing follows the reference's four-column, five-row rhythm with circular controls, a taller display region, and a distinct orange operator column.
+- Scientific mode follows the reference ten-column function grid. Programmer mode follows its seven-column logic grid with base controls and a clickable 64-bit display.
+- Colors reuse SewingOS tokens while matching the reference's dark canvas, gray number keys, lighter function keys, and orange operators.
+- The calculator has no photographic or decorative image assets. The existing SewingOS window chrome remains the intentional host-product frame.
+- Copy is limited to calculator values, expressions, mode labels, history metadata, accessible control labels, and clear domain/integer error messages.
+
+**Patches Made**
+
+- Replaced the inline arithmetic variables with a dedicated calculator state engine.
+- Added repeated equals, operator replacement, chained operations, contextual percentages, decimal precision cleanup, sign changes, backspace, and error recovery.
+- Added selected-operator styling, long-number scaling, keyboard parity, focus states, and ARIA labels.
+- Added a standard-precedence scientific expression engine with parentheses, powers, roots, logs, trigonometry, hyperbolic functions, degree/radian switching, memory, factorial, constants, and `2nd` functions.
+- Added a fixed-width 64-bit `BigInt` programmer engine with bases 8/10/16, integer truncation, bitwise operators, shifts, rotates, byte flips, grouping, ASCII/Unicode display, and clickable bits.
+- Added persistent history with reload and clear actions, plus Command-1/2/3 mode shortcuts.
+- Added 18 unit tests and verified mouse, keyboard, history reload, and the browser console.
+
+**Follow-up Polish**
+
+- Programmer controls are slightly denser vertically than the tall source screenshot so every control remains above the Dock at a 1280 x 720 viewport.
+
+final result: passed
+
+---
+
 # Weather and Calendar Design QA
 
 - Source visual truth:
