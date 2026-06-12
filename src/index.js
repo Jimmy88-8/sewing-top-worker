@@ -23,6 +23,8 @@
 /* ================= symbol registry ================= */
 
 const SYMBOLS = {
+  SPY:    { name: "SPDR S&P 500 ETF TRUST",     kind: "ETF", provider: "yahoo", ref: "SPY", base: 730.9, vol: 0.5 },
+  QQQ:    { name: "INVESCO QQQ TRUST SERIES 1", kind: "ETF", provider: "yahoo", ref: "QQQ", base: 702.5, vol: 0.7 },
   AAPL:   { name: "APPLE INC",          kind: "Equity", provider: "yahoo",   ref: "AAPL",     base: 291.6,  vol: 1.0 },
   MSFT:   { name: "MICROSOFT CORP",     kind: "Equity", provider: "yahoo",   ref: "MSFT",     base: 512.7,  vol: 0.9 },
   NVDA:   { name: "NVIDIA CORP",        kind: "Equity", provider: "yahoo",   ref: "NVDA",     base: 165.0,  vol: 1.9 },

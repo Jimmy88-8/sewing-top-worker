@@ -10,9 +10,14 @@
  *   <FN>             run function for current security
  *   MAIN W WEI GP DES FA N HELP OFF
  *
+ * MAIN/MENU opens the Chinese function directory (彭博功能主目录) as an
+ * overlay panel, navigating the real MenuId tree in bbg-menus.js.
+ *
  * Live data from /api/quotes, /api/history, /api/news with tagged SIM
  * fallback. No real credentials are used or stored.
  */
+
+import { BBG_MENUS, MENU_HOME, menuHasAI } from "/js/apps/bbg-menus.js";
 
 const fmt = (x, dp) =>
   x == null ? "—" : x.toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp });
@@ -28,7 +33,7 @@ const hhmm = (t) => {
 const RANGES = ["1D", "5D", "1M", "6M", "1Y"];
 
 const FUNCTIONS = [
-  ["MAIN", "Main Menu", "终端主菜单"],
+  ["MAIN", "Main Menu", "彭博功能主目录"],
   ["W", "Watchlist Monitor", "自选股监控"],
   ["WEI", "World Markets", "全球市场指数"],
   ["GP", "Price Graph", "价格图表"],
@@ -95,7 +100,9 @@ export function createMarketTerminal() {
   const state = {
     logged: saved.session === true,
     sec: saved.sec ?? "NVDA",
-    fn: saved.fn ?? "MAIN",
+    fn: saved.fn === "MAIN" || saved.fn === "STUB" || !saved.fn ? "WEI" : saved.fn,
+    menu: saved.menu !== undefined ? saved.menu : MENU_HOME,
+    stub: null,
     range: saved.range ?? "1D",
     chartType: saved.type ?? "candle",
     monFilter: "ALL",
@@ -115,7 +122,9 @@ export function createMarketTerminal() {
 
   const persist = () => {
     localStorage.setItem("sewingos.bbg", JSON.stringify({
-      session: state.logged, sec: state.sec, fn: state.fn,
+      session: state.logged, sec: state.sec,
+      fn: state.fn === "STUB" ? "WEI" : state.fn,
+      menu: state.menu,
       range: state.range, type: state.chartType, read: [...state.read].slice(-200),
     }));
   };
@@ -213,7 +222,10 @@ export function createMarketTerminal() {
           <span class="bbg-sec-msg"></span>
           <span class="bbg-sec-quote"></span>
         </div>
-        <div class="bbg-page"></div>
+        <div class="bbg-pagezone">
+          <div class="bbg-page"></div>
+          <div class="bbg-menuhost" hidden></div>
+        </div>
         <div class="bbg-fnbar">
           <div class="bbg-fnbtns">
             ${FUNCTIONS.filter(([c]) => c !== "OFF").map(([c, en]) =>
@@ -234,12 +246,14 @@ export function createMarketTerminal() {
 
     // typing anywhere jumps to the command line, like the real terminal
     root.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && state.menu != null) { closeMenu(); return; }
       if (e.target === cmd || e.target.closest("input, textarea")) return;
       if (e.key.length === 1 && /[\w.]/.test(e.key) && !e.metaKey && !e.ctrlKey) cmd.focus();
     });
 
     renderSecbar();
     renderPage();
+    renderMenu();
     renderFeed();
     tickClock();
   }
@@ -298,7 +312,8 @@ export function createMarketTerminal() {
     const parts = line.trim().toUpperCase().split(/\s+/).filter(Boolean);
     if (!parts.length) return;
     const [a, b] = parts;
-    const isFn = (x) => FUNCTIONS.some(([c]) => c === x) || x === "MON" || x === "MOST" || x === "NEWS";
+    if (state.menu != null && parts.length === 1 && /^\d{1,3}$/.test(a)) { menuPick(Number(a)); return; }
+    const isFn = (x) => FUNCTIONS.some(([c]) => c === x) || x === "MON" || x === "MOST" || x === "NEWS" || x === "MENU";
     if (state.quotes.has(a)) { exec(isFn(b) ? b : "GP", a); return; }
     if (isFn(a)) { exec(a); return; }
     flashMsg(`无效指令 INVALID: ${a} — 键入 HELP <GO>`);
@@ -307,12 +322,113 @@ export function createMarketTerminal() {
   function exec(fn, sym) {
     if (fn === "MON" || fn === "MOST") fn = "W";
     if (fn === "NEWS") fn = "N";
+    if (fn === "MENU") fn = "MAIN";
     if (fn === "OFF") { logoff(); return; }
+    if (fn === "MAIN") { openMenu(MENU_HOME); return; }
+    if (state.menu != null) { state.menu = null; renderMenu(); }
     if (sym) state.sec = sym;
     state.fn = fn;
     persist();
     renderSecbar();
     renderPage();
+  }
+
+  /* ---------- 彭博功能主目录 menu overlay ---------- */
+
+  // function codes that map onto pages this demo actually implements
+  const CODE_MAP = {
+    DES: "DES", GP: "GP", GF: "GP", GPC: "GP", GIP: "GP", GPO: "GP",
+    FA: "FA", MODL: "FA", CN: "N", TREN: "N", FIRS: "N", EVTS: "N",
+    WEI: "WEI", WB: "WEI", WBIX: "WEI", W: "W", NW: "W", MYQ: "W",
+    HELP: "HELP",
+  };
+
+  function openMenu(id) {
+    if (!BBG_MENUS[id]) { flashMsg(`子目录未收录 MENU NOT CAPTURED`); return; }
+    state.menu = id;
+    persist();
+    renderMenu();
+  }
+
+  function closeMenu() {
+    if (state.menu == null) return;
+    state.menu = null;
+    persist();
+    renderMenu();
+  }
+
+  function runFnCode(code, name) {
+    const mapped = CODE_MAP[code] ??
+      (code.startsWith("TOP") || code.startsWith("NI ") || code.startsWith("NH ") ? "N" : null);
+    if (mapped) { exec(mapped); return; }
+    state.stub = { code, name };
+    exec("STUB");
+  }
+
+  function menuRowHTML(row) {
+    if (row[0] === "s") return row[1] ? `<div class="bbg-msec">${esc(row[1])}</div>` : `<div class="bbg-mgap"></div>`;
+    if (row[0] === "m") {
+      const [, no, name, ar, target, ai] = row;
+      return `<button class="bbg-mr" data-kind="m" data-no="${esc(no)}" data-target="${target || ""}">
+        ${ai ? `<em class="bbg-ai">AI</em>` : ""}<i>${esc(no)}</i><span class="nm">${esc(name)}</span><u>${ar === ">>" ? "»" : "›"}</u>
+      </button>`;
+    }
+    const [, no, code, name, ai] = row;
+    return `<button class="bbg-mr" data-kind="f" data-no="${esc(no)}" data-code="${esc(code)}" data-name="${esc(name)}">
+      ${ai ? `<em class="bbg-ai">AI</em>` : ""}<i>${esc(no)}</i><b>${esc(code)}</b><span class="nm">${esc(name)}</span>
+    </button>`;
+  }
+
+  function renderMenu() {
+    const host = $(".bbg-menuhost");
+    if (!host) return;
+    $$(".bbg-fnbtns button").forEach((b) => { if (b.dataset.fn === "MAIN") b.classList.toggle("on", state.menu != null); });
+    if (state.menu == null) { host.hidden = true; host.innerHTML = ""; return; }
+    const menu = BBG_MENUS[state.menu];
+    const crumbs = menu.c.map((cid, i) => {
+      const cur = i === menu.c.length - 1;
+      return `<span class="bbg-crumb${cur ? " cur" : ""}" data-id="${cid}">${esc(BBG_MENUS[cid]?.t ?? cid)}</span>`;
+    }).join(`<u class="bbg-crumb-sep">›</u>`);
+    host.hidden = false;
+    host.innerHTML = `
+      <div class="bbg-menu" role="dialog" aria-label="${esc(menu.t)}">
+        <div class="bbg-menu-cxl"><button class="bbg-menu-cancel">&lt;Cancel&gt;</button><button class="bbg-menu-x">×</button></div>
+        <div class="bbg-menu-crumbs"><span class="bbg-home"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1 0 8h2v7h4v-5h4v5h4V8h2L8 1z"/></svg></span>${crumbs}</div>
+        <div class="bbg-menu-body">
+          <div class="bbg-menu-col">${menu.l.map(menuRowHTML).join("")}</div>
+          <div class="bbg-menu-col">${menu.r.map(menuRowHTML).join("")}</div>
+        </div>
+        <div class="bbg-menu-foot">
+          <span class="bbg-ai-note">${menuHasAI(menu) ? `<em class="bbg-ai">AI</em> Indicates function uses Bloomberg AI technology` : ""}</span>
+          <span class="bbg-menuid">MenuId: ${state.menu}</span>
+        </div>
+      </div>`;
+    host.querySelector(".bbg-menu-cancel").addEventListener("click", closeMenu);
+    host.querySelector(".bbg-menu-x").addEventListener("click", closeMenu);
+    host.addEventListener("pointerdown", (e) => { if (e.target === host) closeMenu(); });
+    host.querySelectorAll(".bbg-crumb:not(.cur)").forEach((c) =>
+      c.addEventListener("click", () => openMenu(Number(c.dataset.id))));
+    host.querySelector(".bbg-menu-body").addEventListener("click", (e) => {
+      const btn = e.target.closest(".bbg-mr");
+      if (btn) runMenuRow(btn);
+    });
+  }
+
+  function runMenuRow(btn) {
+    if (btn.dataset.kind === "m") {
+      const target = Number(btn.dataset.target);
+      if (target) openMenu(target);
+      else flashMsg("该子目录未收录（截图未覆盖） SUBMENU NOT CAPTURED");
+      return;
+    }
+    runFnCode(btn.dataset.code, btn.dataset.name);
+  }
+
+  function menuPick(n) {
+    const no = `${n})`;
+    const btn = $(`.bbg-menu .bbg-mr[data-no="${no}"]`);
+    if (btn) runMenuRow(btn);
+    else flashMsg(`无此编号 NO ITEM ${no}`);
   }
 
   function logoff() {
@@ -346,7 +462,9 @@ export function createMarketTerminal() {
     if (!nameEl) return;
     const fnMeta = FUNCTIONS.find(([c]) => c === state.fn);
     nameEl.textContent = q ? `${q.symbol} ${kindTag(q)}` : state.sec;
-    $(".bbg-sec-fn").textContent = fnMeta ? `${state.fn} » ${fnMeta[2]}` : state.fn;
+    $(".bbg-sec-fn").textContent =
+      state.fn === "STUB" && state.stub ? `${state.stub.code} » ${state.stub.name}`
+      : fnMeta ? `${state.fn} » ${fnMeta[2]}` : state.fn;
     const qEl = $(".bbg-sec-quote");
     if (q) {
       const dp = dpOf(q.last);
@@ -364,46 +482,25 @@ export function createMarketTerminal() {
     const page = $(".bbg-page");
     if (!page) return;
     $$(".bbg-fnbtns button").forEach((b) => b.classList.toggle("on", b.dataset.fn === state.fn));
-    const views = { MAIN: pageMain, W: pageMonitor, WEI: pageWEI, GP: pageGP, DES: pageDES, FA: pageFA, N: pageNews, HELP: pageHelp };
-    (views[state.fn] ?? pageMain)(page);
+    const views = { W: pageMonitor, WEI: pageWEI, GP: pageGP, DES: pageDES, FA: pageFA, N: pageNews, HELP: pageHelp, STUB: pageStub };
+    (views[state.fn] ?? pageWEI)(page);
   }
 
-  /* MAIN — numbered amber menu, like the real master menu */
-  function pageMain(page) {
-    const item = (n, code, cn, en, secArg) => `
-      <button class="bbg-mi" data-fn="${code}" ${secArg ? `data-sym="${secArg}"` : ""}>
-        <i>${n})</i><b>${code}</b><span>${cn}</span><em>${en}</em>
-      </button>`;
+  /* STUB — placeholder page for terminal functions the demo doesn't simulate */
+  function pageStub(page) {
+    const { code = "????", name = "" } = state.stub ?? {};
     page.innerHTML = `
-      <div class="bbg-main">
-        <div class="bbg-main-head"><b>SEWING</b> 终端主菜单 — 在命令行键入代码并按 &lt;GO&gt;</div>
-        <div class="bbg-main-cols">
-          <div>
-            <div class="bbg-sect">行情与监控 MONITORS</div>
-            ${item(1, "W", "自选股监控", "Watchlist Monitor")}
-            ${item(2, "WEI", "全球市场指数", "World Market Indices")}
-            <div class="bbg-sect">图表与分析 CHARTS &amp; ANALYTICS</div>
-            ${item(3, "GP", "价格图表", "Price Graph")}
-            ${item(4, "DES", "证券描述", "Security Description")}
-            ${item(5, "FA", "财务分析", "Financial Analysis")}
-          </div>
-          <div>
-            <div class="bbg-sect">新闻 NEWS</div>
-            ${item(6, "N", "头条新闻", "Top News")}
-            <div class="bbg-sect">系统 SYSTEM</div>
-            ${item(7, "HELP", "功能列表", "Function Directory")}
-            ${item(8, "OFF", "退出登录", "Log Off")}
-            <div class="bbg-sect">快速访问 QUICK SECURITIES</div>
-            ${["NVDA", "AAPL", "SPX", "BTC"].map((s, i) => `
-              <button class="bbg-mi" data-fn="GP" data-sym="${s}">
-                <i>${9 + i})</i><b>${s}</b><span>${esc(state.quotes.get(s)?.name ?? "")}</span><em>GP</em>
-              </button>`).join("")}
-          </div>
+      <div class="bbg-stub">
+        <div class="bbg-stub-code">${esc(code)}</div>
+        <div class="bbg-stub-name">${esc(name)}</div>
+        <p>该功能未包含在 SEWING 演示终端中。<br><span>This function is not simulated in the SEWING demo terminal.</span></p>
+        <div class="bbg-stub-actions">
+          <button class="bbg-tab" data-act="menu">&lt;MENU&gt; 返回功能目录</button>
+          <button class="bbg-tab" data-act="gp">GP 价格图表</button>
         </div>
-        <div class="bbg-main-foot">提示：键入证券代码（如 NVDA）直接调出图表；NVDA DES 查看描述。数据来源 Yahoo·Binance·RSS，不可用时自动转入模拟并标注 SIM。</div>
       </div>`;
-    page.querySelectorAll(".bbg-mi").forEach((b) =>
-      b.addEventListener("click", () => exec(b.dataset.fn, b.dataset.sym || undefined)));
+    page.querySelector('[data-act="menu"]').addEventListener("click", () => exec("MAIN"));
+    page.querySelector('[data-act="gp"]').addEventListener("click", () => exec("GP"));
   }
 
   /* W — full-page monitor table */
